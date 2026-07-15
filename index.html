@@ -108,7 +108,8 @@
     touch-action: none; -webkit-user-select: none; user-select: none;
   }
   .shutter-btn:active, .shutter-btn.holding { background: #ff5252; }
-  .close-btn { background: transparent; color: #fff; border: 1px solid #666; width: auto; padding: 8px 14px; margin: 0; }
+  .close-btn { background: transparent; color: #fff; border: 1px solid #666; width: auto; padding: 8px 12px; margin: 0; font-size: 13px; white-space: nowrap; }
+  .close-btn.voice-off { color: #888; border-color: #444; }
   .camera-overlay .queue-status {
     color: #9be29b; font-size: 12px; text-align: center; padding: 6px 0; background: #111; min-height: 16px;
   }
@@ -217,7 +218,7 @@
   <div class="camera-bar">
     <button type="button" class="close-btn" id="cameraCloseBtn">✕ 닫기</button>
     <span class="count" id="cameraShotCount">0장 촬영됨</span>
-    <span class="spacer"></span>
+    <button type="button" class="close-btn" id="voiceToggleBtn">🎤 음성 켜짐</button>
   </div>
   <video id="cameraVideo" autoplay playsinline muted></video>
   <div class="review-tray hidden" id="reviewTray"></div>
@@ -768,8 +769,81 @@ document.addEventListener('visibilitychange', function () {
   if (document.visibilityState === 'visible') updateWakeLock();
 });
 
+// ------------------------------------------------------------------
+// 음성으로 촬영 — "찰칵"이라고 말하면 셔터를 누른 것처럼 사진이 찍힌다.
+// 브라우저 내장 음성 인식(Web Speech API)을 쓴다. 크롬 계열(안드로이드 크롬 포함)에서만
+// 지원되며, 지원하지 않는 브라우저에서는 버튼이 "미지원"으로 비활성화되고 셔터 버튼으로만
+// 촬영하면 된다 — 이 기능이 없어도 기존 촬영 방식에는 전혀 영향이 없다.
+// ------------------------------------------------------------------
+const SpeechRecognitionCtor_ = window.SpeechRecognition || window.webkitSpeechRecognition;
+const voiceToggleBtn = document.getElementById('voiceToggleBtn');
+let voiceRecognition_ = null;
+let voiceEnabled = true;   // 사용자가 켜둔 상태인지(꺼두면 카메라를 열어도 다시 켜지 않는다)
+let voiceShouldRun_ = false; // 지금 이 순간 인식이 돌고 있어야 하는지(카메라가 열려있는 동안만)
+
+function updateVoiceToggleLabel_() {
+  if (!voiceToggleBtn) return;
+  if (!SpeechRecognitionCtor_) {
+    voiceToggleBtn.textContent = '🎤 미지원';
+    voiceToggleBtn.disabled = true;
+    voiceToggleBtn.classList.add('voice-off');
+    return;
+  }
+  voiceToggleBtn.textContent = voiceEnabled ? '🎤 "찰칵" 켜짐' : '🎤 음성 꺼짐';
+  voiceToggleBtn.classList.toggle('voice-off', !voiceEnabled);
+}
+
+function startVoiceRecognition_() {
+  if (!SpeechRecognitionCtor_ || !voiceEnabled) return;
+  voiceShouldRun_ = true;
+  if (voiceRecognition_) { try { voiceRecognition_.stop(); } catch (e) {} }
+  voiceRecognition_ = new SpeechRecognitionCtor_();
+  voiceRecognition_.lang = 'ko-KR';
+  voiceRecognition_.continuous = true;
+  voiceRecognition_.interimResults = false;
+  voiceRecognition_.onresult = function (event) {
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const transcript = (event.results[i][0] && event.results[i][0].transcript) || '';
+      // "찰칵"의 흔한 인식 오류(짤칵/철칵 등)도 함께 받아준다.
+      if (/찰\s*칵|짤\s*칵|철\s*칵/.test(transcript)) {
+        captureFrameToTray();
+      }
+    }
+  };
+  voiceRecognition_.onerror = function () { /* 인식 실패는 무시 — onend에서 재시작 시도 */ };
+  voiceRecognition_.onend = function () {
+    // 음성 인식은 일정 시간(무음 등)이 지나면 자동으로 멈추는 경우가 많으므로,
+    // 카메라가 아직 열려 있고 사용자가 꺼두지 않았다면 계속 다시 시작한다.
+    if (voiceShouldRun_ && voiceEnabled && cameraOverlay && !cameraOverlay.classList.contains('hidden')) {
+      try { voiceRecognition_.start(); } catch (e) {}
+    }
+  };
+  try { voiceRecognition_.start(); } catch (e) {}
+}
+
+function stopVoiceRecognition_() {
+  voiceShouldRun_ = false;
+  if (voiceRecognition_) {
+    try { voiceRecognition_.stop(); } catch (e) {}
+    voiceRecognition_ = null;
+  }
+}
+
+if (voiceToggleBtn) {
+  voiceToggleBtn.addEventListener('click', function () {
+    if (!SpeechRecognitionCtor_) return;
+    voiceEnabled = !voiceEnabled;
+    updateVoiceToggleLabel_();
+    if (voiceEnabled) startVoiceRecognition_(); else stopVoiceRecognition_();
+  });
+}
+updateVoiceToggleLabel_();
+
 function openCamera(siteIdx) {
   activeSiteIdx = siteIdx;
+  // 버튼 클릭(사용자 제스처) 시점에 미리 오디오를 켜둬야, 나중에 음성 명령으로
+  // 찍었을 때도(버튼을 직접 누른 게 아니어도) 셔터 소리가 막히지 않는다.
+  initAudioCtx();
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     cameraInput.click();
     return;
@@ -789,6 +863,7 @@ function openCamera(siteIdx) {
       cameraQueueStatus.textContent = '';
       cameraOverlay.classList.remove('hidden');
       updateWakeLock();
+      startVoiceRecognition_(); // 음성 촬영이 켜져 있으면 카메라와 함께 듣기 시작
     })
     .catch(function () {
       cameraInput.click();
@@ -800,6 +875,7 @@ function openCamera(siteIdx) {
 // 업로드되지 않는다.
 function closeCamera() {
   finalizeReviewTray();
+  stopVoiceRecognition_();
   if (currentStream) {
     currentStream.getTracks().forEach(function (t) { t.stop(); });
     currentStream = null;
@@ -844,29 +920,43 @@ function initAudioCtx() {
   } catch (e) { /* 지원하지 않는 브라우저는 그냥 무음 */ }
 }
 
+// 예전 버전은 사각파(square wave) 두 개로 "삐빅" 소리를 냈는데 너무 전자음처럼
+// 들린다는 피드백을 받았다. 이번에는 화이트노이즈를 대역통과 필터로 걸러서 만든
+// 두 번의 "딸깍" 클릭음(거울/셔터가 열릴 때, 닫힐 때)으로 바꿔서 실제 카메라
+// 셔터 소리에 더 가깝게 만들었다.
+let shutterNoiseBuffer = null;
+
+function getShutterNoiseBuffer_() {
+  if (shutterNoiseBuffer) return shutterNoiseBuffer;
+  const len = Math.floor(audioCtx.sampleRate * 0.15);
+  shutterNoiseBuffer = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+  const data = shutterNoiseBuffer.getChannelData(0);
+  for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+  return shutterNoiseBuffer;
+}
+
+function playNoiseClick_(startTime, duration, freq, q, gainPeak) {
+  const src = audioCtx.createBufferSource();
+  src.buffer = getShutterNoiseBuffer_();
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.frequency.value = freq;
+  filter.Q.value = q;
+  const gain = audioCtx.createGain();
+  gain.gain.setValueAtTime(0.0001, startTime);
+  gain.gain.exponentialRampToValueAtTime(gainPeak, startTime + 0.002);
+  gain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
+  src.connect(filter).connect(gain).connect(audioCtx.destination);
+  src.start(startTime);
+  src.stop(startTime + duration + 0.02);
+}
+
 function playShutterSound() {
   if (!audioCtx) return;
   try {
     const now = audioCtx.currentTime;
-    const osc1 = audioCtx.createOscillator();
-    const gain1 = audioCtx.createGain();
-    osc1.type = 'square';
-    osc1.frequency.setValueAtTime(1800, now);
-    gain1.gain.setValueAtTime(0.25, now);
-    gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.03);
-    osc1.connect(gain1).connect(audioCtx.destination);
-    osc1.start(now);
-    osc1.stop(now + 0.03);
-
-    const osc2 = audioCtx.createOscillator();
-    const gain2 = audioCtx.createGain();
-    osc2.type = 'square';
-    osc2.frequency.setValueAtTime(900, now + 0.045);
-    gain2.gain.setValueAtTime(0.2, now + 0.045);
-    gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
-    osc2.connect(gain2).connect(audioCtx.destination);
-    osc2.start(now + 0.045);
-    osc2.stop(now + 0.09);
+    playNoiseClick_(now, 0.035, 3200, 3.2, 0.9);        // 셔터 열림 — 짧고 날카로운 클릭
+    playNoiseClick_(now + 0.05, 0.05, 1500, 2.2, 0.55); // 셔터 닫힘 — 살짝 낮고 부드러운 클릭
   } catch (e) { /* 소리 재생 실패는 무시 — 촬영 자체에는 영향 없음 */ }
 }
 
