@@ -143,8 +143,7 @@
 
 <div class="card config-warning hidden" id="configWarning">
   ⚠️ API_URL이 아직 설정되지 않았습니다. capture.html 맨 아래 스크립트에서
-  <code>const API_URL = 'https://script.google.com/macros/s/AKfycbyn5qdy6f2KrwWJUTjtx2BA0LM-XgcHDAgmZOm9-AWuTJpkiwUgqoU2IX0--_XssMK-/exec
-'</code> 부분을 실제 구글 앱스 스크립트 배포 URL로 바꿔주세요.
+  <code>const API_URL = '...'</code> 부분을 실제 구글 앱스 스크립트 배포 URL로 바꿔주세요.
 </div>
 
 <div class="card hidden" id="loadingCard">
@@ -208,7 +207,7 @@
 // script.google.com에서 Code.gs를 웹 앱으로 배포하면 나오는
 // https://script.google.com/macros/s/xxxxxxxx/exec 형태의 URL을 그대로 넣으세요.
 // ====================================================================
-const API_URL = 'PUT_YOUR_APPS_SCRIPT_WEB_APP_URL_HERE';
+const API_URL = 'https://script.google.com/macros/s/AKfycbyn5qdy6XgcHDAgmZOm9-AWuTJpkiwUgqoU2IX0--_XssMK-/exec';
 
 if (!API_URL || API_URL.indexOf('PUT_YOUR_') === 0) {
   document.getElementById('configWarning').classList.remove('hidden');
