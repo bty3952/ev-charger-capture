@@ -538,14 +538,9 @@ function selectRow(r) {
   selectedCard.classList.remove('hidden');
 
   memoInput.value = '';
-  memoStatus.textContent = '';
+  memoStatus.textContent = '메모 불러오는 중...';
   memoStatus.className = 'status';
-  callApiRead('getMemo', { waitingNo: r.waitingNo, applicantName: r.applicantName })
-    .then(function (text) {
-      if (!selected || selected.waitingNo !== r.waitingNo || selected.applicantName !== r.applicantName) return;
-      memoInput.value = text || '';
-    })
-    .catch(function () { /* 조용히 무시 */ });
+  loadMemo_(r, 3);
 
   siteCountBox.classList.add('hidden');
   sitePanels.classList.add('hidden');
@@ -619,12 +614,45 @@ changeSiteCountBtn.addEventListener('click', function () {
   siteCountStatus.className = 'status';
 });
 
+// 저장(callApiWrite)은 응답 내용을 읽을 수 없으므로(교차 출처 iframe), 다른 저장
+// 동작들과 마찬가지로 저장 후 다시 조회(callApiRead)해서 실제로 반영됐는지 확인한다.
+// 이전 버전은 이 확인 없이 그냥 "저장되었습니다"라고 표시해서, 실제로는 네트워크
+// 문제로 저장이 안 됐는데도 성공한 것처럼 보이는 문제가 있었다.
+function saveMemoWithConfirm_(r, text, attemptsLeft) {
+  return callApiWrite('saveMemo', { waitingNo: r.waitingNo, applicantName: r.applicantName, memoText: text })
+    .then(function () { return callApiRead('getMemo', { waitingNo: r.waitingNo, applicantName: r.applicantName }); })
+    .then(function (savedText) {
+      if (savedText === text) return true;
+      if (attemptsLeft > 1) return saveMemoWithConfirm_(r, text, attemptsLeft - 1);
+      throw new Error('저장을 시도했지만 반영이 확인되지 않았습니다');
+    });
+}
+
+function loadMemo_(r, attemptsLeft) {
+  callApiRead('getMemo', { waitingNo: r.waitingNo, applicantName: r.applicantName })
+    .then(function (text) {
+      if (!selected || selected.waitingNo !== r.waitingNo || selected.applicantName !== r.applicantName) return;
+      memoInput.value = text || '';
+      memoStatus.textContent = '';
+      memoStatus.className = 'status';
+    })
+    .catch(function (err) {
+      if (!selected || selected.waitingNo !== r.waitingNo || selected.applicantName !== r.applicantName) return;
+      if (attemptsLeft > 1) { loadMemo_(r, attemptsLeft - 1); return; }
+      // 조용히 무시하지 않고, 못 불러왔다는 사실을 화면에 남겨서 "빈 메모"와 착각하지 않게 한다.
+      memoStatus.textContent = '메모를 불러오지 못했습니다(' + err.message + '). 저장하기 전에 새로고침 후 다시 확인해주세요.';
+      memoStatus.className = 'status err';
+    });
+}
+
 memoSaveBtn.addEventListener('click', function () {
   if (!selected) return;
+  const r = selected;
+  const text = memoInput.value;
   memoStatus.textContent = '저장 중...';
   memoStatus.className = 'status';
   memoSaveBtn.disabled = true;
-  callApiWrite('saveMemo', { waitingNo: selected.waitingNo, applicantName: selected.applicantName, memoText: memoInput.value })
+  saveMemoWithConfirm_(r, text, 3)
     .then(function () {
       memoSaveBtn.disabled = false;
       memoStatus.textContent = '저장되었습니다.';
@@ -632,7 +660,7 @@ memoSaveBtn.addEventListener('click', function () {
     })
     .catch(function (err) {
       memoSaveBtn.disabled = false;
-      memoStatus.textContent = '저장 실패: ' + err.message;
+      memoStatus.textContent = '저장 실패: ' + err.message + ' — 다시 눌러서 저장해주세요.';
       memoStatus.className = 'status err';
     });
 });
@@ -704,6 +732,42 @@ const captureCanvas = document.getElementById('captureCanvas');
 let currentStream = null;
 let shotCountThisSession = 0;
 
+// ------------------------------------------------------------------
+// 화면 꺼짐 방지(Wake Lock) — 카메라를 쓰는 동안이나 업로드가 아직 남아있는 동안
+// 화면이 자동으로 꺼지지 않게 한다. 화면이 꺼지면 브라우저가 백그라운드 작업(업로드
+// 포함)을 크게 줄이거나 멈춰서, 그동안 촬영/업로드가 중단되는 문제가 있었다.
+// (일부 구형 브라우저는 Wake Lock API를 지원하지 않을 수 있는데, 그런 경우 그냥
+// 조용히 무시되고 기존처럼 동작한다 — 화면 꺼짐 방지만 안 될 뿐이다.)
+// ------------------------------------------------------------------
+let wakeLock = null;
+
+function requestWakeLock_() {
+  if (!('wakeLock' in navigator)) return;
+  navigator.wakeLock.request('screen')
+    .then(function (lock) { wakeLock = lock; })
+    .catch(function () { /* 지원 안 하거나 권한 문제 — 무시 */ });
+}
+
+function releaseWakeLock_() {
+  if (wakeLock) {
+    wakeLock.release().catch(function () {});
+    wakeLock = null;
+  }
+}
+
+// 카메라가 열려 있거나, 아직 못 끝낸 업로드가 있으면 화면을 계속 켜둔다.
+function updateWakeLock() {
+  const cameraOpen = cameraOverlay && !cameraOverlay.classList.contains('hidden');
+  const needed = cameraOpen || uploadQueue.length > 0;
+  if (needed) requestWakeLock_(); else releaseWakeLock_();
+}
+
+// 화면이 잠겼다 다시 켜졌을 때(예: 사용자가 다시 화면을 켠 경우) Wake Lock이
+// 자동으로 풀려있으므로, 필요하면 다시 걸어준다.
+document.addEventListener('visibilitychange', function () {
+  if (document.visibilityState === 'visible') updateWakeLock();
+});
+
 function openCamera(siteIdx) {
   activeSiteIdx = siteIdx;
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -719,6 +783,7 @@ function openCamera(siteIdx) {
       cameraShotCount.textContent = '0장 담김';
       cameraQueueStatus.textContent = '';
       cameraOverlay.classList.remove('hidden');
+      updateWakeLock();
     })
     .catch(function () {
       cameraInput.click();
@@ -736,6 +801,7 @@ function closeCamera() {
   }
   cameraOverlay.classList.add('hidden');
   if (activeSiteIdx) refreshPhotoList(activeSiteIdx);
+  updateWakeLock();
 }
 
 cameraCloseBtn.addEventListener('click', closeCamera);
@@ -1034,9 +1100,93 @@ cameraInput.addEventListener('change', function (e) {
 
 // ------------------------------------------------------------------
 // 백그라운드 업로드 대기열
+//
+// 이전 버전의 문제점 두 가지를 고쳤다:
+//  1) 재시도할 때마다 파일명을 새로 만들어서, "실제로는 올라갔는데 확인만 실패한"
+//     경우에 같은 사진이 다른 이름으로 중복 업로드되고 있었다. → 파일명을 큐에
+//     넣는 시점에 한 번만 정해서 재시도 내내 그대로 쓰고, 재시도 직전에 "혹시
+//     이미 올라가 있는지"부터 먼저 확인해서 중복 업로드를 막는다.
+//  2) 큐가 메모리(변수)에만 있어서 화면을 끄거나 앱(탭)을 닫으면 대기 중이던
+//     업로드가 통째로 사라졌다. → IndexedDB에도 함께 저장해두고, 페이지를 다시
+//     열면 자동으로 이어서 업로드한다.
 // ------------------------------------------------------------------
 let uploadQueue = [];
 let uploadBusy = false;
+
+const UPLOAD_DB_NAME = 'ev_charger_upload_queue_v1';
+const UPLOAD_STORE_NAME = 'queue';
+let uploadDbPromise = null;
+
+function openUploadDb_() {
+  if (!window.indexedDB) return Promise.reject(new Error('IndexedDB 미지원'));
+  if (uploadDbPromise) return uploadDbPromise;
+  uploadDbPromise = new Promise(function (resolve, reject) {
+    const req = indexedDB.open(UPLOAD_DB_NAME, 1);
+    req.onupgradeneeded = function () {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(UPLOAD_STORE_NAME)) {
+        db.createObjectStore(UPLOAD_STORE_NAME, { keyPath: 'qid' });
+      }
+    };
+    req.onsuccess = function () { resolve(req.result); };
+    req.onerror = function () { reject(req.error); };
+  });
+  return uploadDbPromise;
+}
+
+function dbPutQueueItem_(item) {
+  return openUploadDb_().then(function (db) {
+    return new Promise(function (resolve, reject) {
+      const tx = db.transaction(UPLOAD_STORE_NAME, 'readwrite');
+      tx.objectStore(UPLOAD_STORE_NAME).put(item);
+      tx.oncomplete = function () { resolve(); };
+      tx.onerror = function () { reject(tx.error); };
+    });
+  });
+}
+
+function dbDeleteQueueItem_(qid) {
+  return openUploadDb_().then(function (db) {
+    return new Promise(function (resolve, reject) {
+      const tx = db.transaction(UPLOAD_STORE_NAME, 'readwrite');
+      tx.objectStore(UPLOAD_STORE_NAME).delete(qid);
+      tx.oncomplete = function () { resolve(); };
+      tx.onerror = function () { reject(tx.error); };
+    });
+  });
+}
+
+function dbGetAllQueueItems_() {
+  return openUploadDb_().then(function (db) {
+    return new Promise(function (resolve, reject) {
+      const tx = db.transaction(UPLOAD_STORE_NAME, 'readonly');
+      const req = tx.objectStore(UPLOAD_STORE_NAME).getAll();
+      req.onsuccess = function () { resolve(req.result || []); };
+      req.onerror = function () { reject(req.error); };
+    });
+  });
+}
+
+// 페이지를 열 때, 이전 세션에서 화면 꺼짐/탭 종료 등으로 못 끝낸 업로드가
+// 남아있으면 자동으로 이어서 올린다.
+openUploadDb_()
+  .then(function () { return dbGetAllQueueItems_(); })
+  .then(function (items) {
+    if (!items || !items.length) return;
+    items.forEach(function (it) {
+      uploadQueue.push({
+        qid: it.qid, waitingNo: it.waitingNo, applicantName: it.applicantName,
+        siteIdx: it.siteIdx, fileName: it.fileName, mimeType: it.mimeType,
+        file: it.blob, attempts: 0,
+      });
+    });
+    setSiteStatus(items[0].siteIdx, '이전에 못 끝낸 업로드 ' + items.length + '장을 이어서 올리는 중...');
+    processUploadQueue();
+  })
+  .catch(function () { /* IndexedDB를 못 쓰는 환경이면 이어올리기만 못 할 뿐, 그 외 동작에는 영향 없음 */ });
+
+let qidCounter_ = 0;
+function makeQid_() { return 'q' + Date.now() + '_' + (qidCounter_++) + '_' + Math.floor(Math.random() * 100000); }
 
 function queueCountFor(siteIdx) {
   return uploadQueue.filter(function (q) { return q.siteIdx === siteIdx; }).length;
@@ -1051,63 +1201,107 @@ function setSiteStatus(siteIdx, text, cls) {
 }
 
 function enqueueUpload(siteIdx, fileOrBlob, mimeType) {
-  uploadQueue.push({ siteIdx: siteIdx, file: fileOrBlob, mimeType: mimeType, attempts: 0 });
+  if (!selected) return;
+  const qid = makeQid_();
+  const fileName = makeLocalFileName(siteIdx);
+  const item = {
+    qid: qid,
+    waitingNo: selected.waitingNo,
+    applicantName: selected.applicantName,
+    siteIdx: siteIdx,
+    fileName: fileName,
+    mimeType: mimeType,
+    attempts: 0,
+    file: fileOrBlob,
+  };
+  uploadQueue.push(item);
+  // 화면 꺼짐/탭 종료에 대비해 IndexedDB에도 같이 저장해둔다(실패해도 메모리 큐로는 계속 진행).
+  dbPutQueueItem_({
+    qid: qid, waitingNo: item.waitingNo, applicantName: item.applicantName,
+    siteIdx: siteIdx, fileName: fileName, mimeType: mimeType, blob: fileOrBlob,
+  }).catch(function () {});
   setSiteStatus(siteIdx, '업로드 대기/진행 중: ' + queueCountFor(siteIdx) + '장 (계속 촬영하셔도 됩니다)');
+  updateWakeLock();
   processUploadQueue();
 }
 
 function processUploadQueue() {
   if (uploadBusy || uploadQueue.length === 0) return;
   uploadBusy = true;
-  const item = uploadQueue.shift();
-  const siteIdx = item.siteIdx;
+  const item = uploadQueue[0]; // 성공을 확인하기 전까지는 큐에서 빼지 않는다(중복 업로드 방지).
 
+  // 재시도인 경우, 실제로 다시 사진 파일을 보내기 전에 "혹시 이전 시도가 성공했는데
+  // 확인 응답만 못 받은 것인지"부터 먼저 확인한다. 이미 올라가 있으면 다시 보내지 않는다.
+  callApiRead('listPhotos', { waitingNo: item.waitingNo, applicantName: item.applicantName, siteIdx: item.siteIdx })
+    .then(function (photos) {
+      const already = (photos || []).some(function (p) { return p.name === item.fileName; });
+      if (already) { onUploadItemDone_(item, photos); return; }
+      doUploadOne_(item);
+    })
+    .catch(function () {
+      // 목록 조회 자체가 실패해도(네트워크가 나쁠 뿐), 일단 업로드는 시도해본다.
+      doUploadOne_(item);
+    });
+}
+
+function doUploadOne_(item) {
   const reader = new FileReader();
   reader.onload = function (evt) {
-    const base64Full = evt.target.result;
-    const base64Data = base64Full.split(',')[1];
-    const fileName = makeLocalFileName(siteIdx);
-
-    // 저장(쓰기)은 응답 내용을 읽을 수 없으므로, 제출 후 사진 목록을 다시 조회해서
-    // 방금 올린 파일명이 실제로 나타났는지로 성공 여부를 확인한다.
+    const base64Data = evt.target.result.split(',')[1];
     callApiWrite('uploadPhoto', {
-      waitingNo: selected.waitingNo,
-      applicantName: selected.applicantName,
-      siteIdx: siteIdx,
+      waitingNo: item.waitingNo,
+      applicantName: item.applicantName,
+      siteIdx: item.siteIdx,
       base64Data: base64Data,
       mimeType: item.mimeType,
-      fileName: fileName,
+      fileName: item.fileName,
     })
       .then(function () {
-        return callApiRead('listPhotos', { waitingNo: selected.waitingNo, applicantName: selected.applicantName, siteIdx: siteIdx });
+        return callApiRead('listPhotos', { waitingNo: item.waitingNo, applicantName: item.applicantName, siteIdx: item.siteIdx });
       })
       .then(function (photos) {
-        const found = (photos || []).some(function (p) { return p.name === fileName; });
-        const grid = document.getElementById('photoGrid-' + siteIdx);
-        if (grid) renderPhotoGrid(grid, photos);
-        if (found) {
-          const remaining = queueCountFor(siteIdx);
-          setSiteStatus(siteIdx, '업로드 완료: ' + fileName
-            + (remaining ? ' (남은 업로드 ' + remaining + '장)' : ''), 'ok');
-          uploadBusy = false;
-          processUploadQueue();
-        } else {
-          throw new Error('업로드는 보냈지만 목록에서 확인되지 않았습니다');
-        }
+        const found = (photos || []).some(function (p) { return p.name === item.fileName; });
+        if (found) { onUploadItemDone_(item, photos); }
+        else { onUploadItemFailed_(item, new Error('업로드는 보냈지만 목록에서 확인되지 않았습니다')); }
       })
-      .catch(function (err) {
-        item.attempts++;
-        if (item.attempts < 5) {
-          uploadQueue.unshift(item);
-          setSiteStatus(siteIdx, '업로드 확인 실패, 재시도 중... (' + item.attempts + '회): ' + err.message, 'err');
-        } else {
-          setSiteStatus(siteIdx, '업로드 반복 실패: ' + err.message + ' — 네트워크 확인 후 다시 촬영해주세요.', 'err');
-        }
-        uploadBusy = false;
-        setTimeout(processUploadQueue, 3000);
-      });
+      .catch(function (err) { onUploadItemFailed_(item, err); });
   };
+  reader.onerror = function () { onUploadItemFailed_(item, new Error('사진 파일을 읽지 못했습니다')); };
   reader.readAsDataURL(item.file);
+}
+
+function onUploadItemDone_(item, photos) {
+  uploadQueue.shift();
+  dbDeleteQueueItem_(item.qid).catch(function () {});
+  const grid = document.getElementById('photoGrid-' + item.siteIdx);
+  if (grid && selected && selected.waitingNo === item.waitingNo && selected.applicantName === item.applicantName) {
+    renderPhotoGrid(grid, photos);
+  }
+  const remaining = queueCountFor(item.siteIdx);
+  setSiteStatus(item.siteIdx, '업로드 완료: ' + item.fileName
+    + (remaining ? ' (남은 업로드 ' + remaining + '장)' : ''), 'ok');
+  uploadBusy = false;
+  updateWakeLock();
+  processUploadQueue();
+}
+
+function onUploadItemFailed_(item, err) {
+  item.attempts++;
+  const MAX_ATTEMPTS = 30; // 현장 네트워크가 불안정해도 쉽게 포기하지 않도록 넉넉하게 잡는다.
+  if (item.attempts < MAX_ATTEMPTS) {
+    const backoffMs = Math.min(30000, 2000 * item.attempts); // 실패할수록 점점 더 기다렸다 재시도(점진적 백오프)
+    setSiteStatus(item.siteIdx, '업로드 재시도 대기 중(' + item.attempts + '회): ' + err.message, 'err');
+    uploadBusy = false;
+    setTimeout(processUploadQueue, backoffMs);
+  } else {
+    // 완전히 포기하지 않고 큐 맨 뒤로 미뤄서, 네트워크가 좋아지면 다른 사진들 사이에서
+    // 계속 재시도되도록 한다(무한정 같은 자리에서 막혀있지 않게).
+    setSiteStatus(item.siteIdx, '업로드가 계속 실패하고 있습니다: ' + err.message + ' — 네트워크가 좋아지면 자동으로 다시 시도합니다.', 'err');
+    uploadQueue.push(uploadQueue.shift());
+    item.attempts = 0;
+    uploadBusy = false;
+    setTimeout(processUploadQueue, 30000);
+  }
 }
 
 function renderPhotoGrid(grid, photos) {
