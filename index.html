@@ -213,21 +213,109 @@ if (!API_URL || API_URL.indexOf('PUT_YOUR_') === 0) {
   document.getElementById('configWarning').classList.remove('hidden');
 }
 
-// 구글 앱스 스크립트 API(Code.gs의 doPost)를 호출하는 공용 함수.
-// text/plain 으로 보내는 이유: CORS 사전요청(OPTIONS)을 피하기 위해서다
-// (앱스 스크립트가 사전요청에는 제대로 응답하지 않기 때문).
-function callApi(action, params) {
-  const body = Object.assign({ action: action }, params || {});
-  return fetch(API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(body),
-  })
-    .then(function (res) { return res.json(); })
-    .then(function (data) {
-      if (!data || !data.ok) throw new Error((data && data.error) || '알 수 없는 오류');
-      return data.result;
-    });
+// ====================================================================
+// 구글 앱스 스크립트 API를 부르는 공용 함수 — fetch()를 쓰지 않는다.
+//
+// 구글 앱스 스크립트의 /exec 주소는 응답 전에 302 리다이렉트를 한 번 거치는데,
+// 그 리다이렉트 응답 자체에 CORS 허용 헤더가 없어서, 다른 도메인(깃허브 페이지 등)에서
+// fetch()로 부르면 "액세스 권한"을 무엇으로 두든 브라우저가 "Failed to fetch"로
+// 막아버립니다(구글 앱스 스크립트 자체의 구조적 한계 — 실제 콘솔 오류로 확인됨).
+// 그래서 fetch/CORS를 아예 거치지 않는 두 가지 방식을 씁니다.
+// ====================================================================
+
+let jsonpCounter = 0;
+
+// 조회(읽기)용: <script src="...?action=...&callback=..."> 로 JSONP 호출.
+// <script> 태그로 불러오는 리소스는 CORS 검사를 받지 않으므로 항상 동작한다.
+function callApiRead(action, params) {
+  return new Promise(function (resolve, reject) {
+    const cbName = 'jsonp_cb_' + (jsonpCounter++) + '_' + Math.floor(Math.random() * 1000000);
+    const timeoutId = setTimeout(function () {
+      cleanup();
+      reject(new Error('요청 시간이 초과되었습니다. 네트워크 상태를 확인해주세요.'));
+    }, 20000);
+
+    function cleanup() {
+      clearTimeout(timeoutId);
+      delete window[cbName];
+      if (script.parentNode) script.parentNode.removeChild(script);
+    }
+
+    window[cbName] = function (data) {
+      cleanup();
+      if (!data || !data.ok) { reject(new Error((data && data.error) || '알 수 없는 오류')); return; }
+      resolve(data.result);
+    };
+
+    const qs = new URLSearchParams(Object.assign({ action: action, callback: cbName }, flattenParams_(params || {})));
+    const script = document.createElement('script');
+    script.src = API_URL + '?' + qs.toString();
+    script.onerror = function () {
+      cleanup();
+      reject(new Error('요청을 보내지 못했습니다. API_URL과 네트워크 상태를 확인해주세요.'));
+    };
+    document.body.appendChild(script);
+  });
+}
+
+// 저장(쓰기)용: 화면에 보이지 않는 <form method="POST" target="숨겨진 iframe">으로 제출.
+// 폼 제출은 CORS 검사 대상이 아니라서 항상 서버까지 도달한다. 다만 응답 내용을
+// 자바스크립트로 읽을 수는 없으므로(교차 출처 iframe), 여기서는 "제출이 끝났다"까지만
+// 확인하고, 실제로 반영됐는지는 호출한 쪽에서 조회(callApiRead)로 다시 확인한다.
+let writeFrameCounter = 0;
+function callApiWrite(action, params) {
+  return new Promise(function (resolve) {
+    const frameName = 'write_frame_' + (writeFrameCounter++) + '_' + Math.floor(Math.random() * 1000000);
+    const iframe = document.createElement('iframe');
+    iframe.name = frameName;
+    iframe.style.display = 'none';
+    document.body.appendChild(iframe);
+
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = API_URL;
+    form.target = frameName;
+    form.style.display = 'none';
+
+    function addField(name, value) {
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = name;
+      input.value = value;
+      form.appendChild(input);
+    }
+    addField('action', action);
+    addField('payload', JSON.stringify(params || {}));
+    document.body.appendChild(form);
+
+    let done = false;
+    function finish() {
+      if (done) return;
+      done = true;
+      clearTimeout(timeoutId);
+      setTimeout(function () {
+        if (form.parentNode) form.parentNode.removeChild(form);
+        if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+      }, 1000);
+      resolve();
+    }
+
+    const timeoutId = setTimeout(finish, 15000); // 응답을 못 읽으니 최대 대기 후에는 그냥 진행
+    iframe.addEventListener('load', finish);
+
+    form.submit();
+  });
+}
+
+// { a: [1,2], b: {x:1} } 같은 값을 URLSearchParams에 넣을 수 있도록
+// 객체/배열은 JSON 문자열로, 나머지는 그냥 문자열로 바꾼다.
+function flattenParams_(params) {
+  const out = {};
+  Object.keys(params).forEach(function (k) {
+    const v = params[k];
+    out[k] = (v !== null && typeof v === 'object') ? JSON.stringify(v) : String(v);
+  });
+  return out;
 }
 
 let rows = [];           // [{waitingNo, applicantName}]
@@ -251,7 +339,7 @@ const cameraInput = document.getElementById('cameraInput');
 // 페이지를 열 때 가장 먼저: 이미 저장된 명단(roster.json)이 있는지 확인한다.
 // 있으면 업로드 화면을 건너뛰고 바로 대기번호 검색 화면을 보여준다.
 loadingCard.classList.remove('hidden');
-callApi('getRoster', {})
+callApiRead('getRoster', {})
   .then(function (savedRows) {
     loadingCard.classList.add('hidden');
     if (savedRows && savedRows.length > 0) {
@@ -331,7 +419,10 @@ xlsxInput.addEventListener('change', function (e) {
       }
 
       uploadStatus.textContent = rows.length + '건 확인됨. 구글 드라이브에 폴더 생성 및 명단 저장 중...';
-      callApi('uploadRoster', { rows: rows })
+      // 저장(쓰기)은 응답 내용을 읽을 수 없으므로, 제출이 끝나면 조회(읽기)로
+      // 실제로 저장됐는지 다시 확인한다.
+      callApiWrite('uploadRoster', { rows: rows })
+        .then(function () { return callApiRead('getRoster', {}); })
         .then(onFoldersCreated)
         .catch(onServerError);
     } catch (err) {
@@ -342,13 +433,12 @@ xlsxInput.addEventListener('change', function (e) {
   reader.readAsArrayBuffer(file);
 });
 
-function onFoldersCreated(results) {
-  const okCount = results.filter(r => r.ok).length;
-  const failCount = results.length - okCount;
-  uploadStatus.textContent = '폴더 준비 완료: ' + okCount + '건'
-    + (failCount ? ' (실패 ' + failCount + '건)' : '')
-    + '. 명단이 저장되어 다음부터는 다시 업로드하지 않아도 됩니다.';
-  uploadStatus.className = 'status ok';
+function onFoldersCreated(savedRows) {
+  const okCount = savedRows ? savedRows.length : 0;
+  uploadStatus.textContent = '명단 저장 완료: ' + okCount + '건'
+    + (okCount !== rows.length ? ' (업로드한 ' + rows.length + '건과 다릅니다 — 확인해주세요)' : '')
+    + '. 다음부터는 다시 업로드하지 않아도 됩니다.';
+  uploadStatus.className = okCount === rows.length ? 'status ok' : 'status err';
   uploadCard.classList.add('hidden');
   searchCard.classList.remove('hidden');
   rosterCountBadge.textContent = rows.length + '건';
@@ -410,7 +500,7 @@ function selectRow(r) {
   siteCountStatus.className = 'status';
   siteCountInput.value = '';
 
-  callApi('getSiteCount', { waitingNo: r.waitingNo, applicantName: r.applicantName })
+  callApiRead('getSiteCount', { waitingNo: r.waitingNo, applicantName: r.applicantName })
     .then(function (existingCount) {
       if (!selected || selected.waitingNo !== r.waitingNo || selected.applicantName !== r.applicantName) return;
       if (existingCount && existingCount > 0) {
@@ -441,12 +531,19 @@ siteCountConfirmBtn.addEventListener('click', function () {
   siteCountStatus.className = 'status';
   siteCountConfirmBtn.disabled = true;
 
-  callApi('setSiteCount', { waitingNo: selected.waitingNo, applicantName: selected.applicantName, siteCount: n })
-    .then(function () {
+  // 저장(쓰기) 후, 실제로 거점 폴더가 만들어졌는지 조회(읽기)로 다시 확인한다.
+  callApiWrite('setSiteCount', { waitingNo: selected.waitingNo, applicantName: selected.applicantName, siteCount: n })
+    .then(function () { return callApiRead('getSiteCount', { waitingNo: selected.waitingNo, applicantName: selected.applicantName }); })
+    .then(function (confirmedCount) {
       siteCountConfirmBtn.disabled = false;
       siteCount = n;
-      siteCountStatus.textContent = n + '개 거점 폴더 준비 완료';
-      siteCountStatus.className = 'status ok';
+      if (confirmedCount >= n) {
+        siteCountStatus.textContent = n + '개 거점 폴더 준비 완료';
+        siteCountStatus.className = 'status ok';
+      } else {
+        siteCountStatus.textContent = '거점 폴더 확인 중 일부만 확인됨(' + confirmedCount + '/' + n + ') — 잠시 후 다시 시도해주세요.';
+        siteCountStatus.className = 'status err';
+      }
       renderSitePanels(n);
       sitePanels.classList.remove('hidden');
       changeSiteCountBtn.classList.remove('hidden');
@@ -725,7 +822,9 @@ function processUploadQueue() {
     const base64Data = base64Full.split(',')[1];
     const fileName = makeLocalFileName(siteIdx);
 
-    callApi('uploadPhoto', {
+    // 저장(쓰기)은 응답 내용을 읽을 수 없으므로, 제출 후 사진 목록을 다시 조회해서
+    // 방금 올린 파일명이 실제로 나타났는지로 성공 여부를 확인한다.
+    callApiWrite('uploadPhoto', {
       waitingNo: selected.waitingNo,
       applicantName: selected.applicantName,
       siteIdx: siteIdx,
@@ -733,19 +832,28 @@ function processUploadQueue() {
       mimeType: item.mimeType,
       fileName: fileName,
     })
-      .then(function (res) {
-        const remaining = queueCountFor(siteIdx);
-        setSiteStatus(siteIdx, '업로드 완료: ' + res.fileName
-          + (remaining ? ' (남은 업로드 ' + remaining + '장)' : ''), 'ok');
-        refreshPhotoList(siteIdx);
-        uploadBusy = false;
-        processUploadQueue();
+      .then(function () {
+        return callApiRead('listPhotos', { waitingNo: selected.waitingNo, applicantName: selected.applicantName, siteIdx: siteIdx });
+      })
+      .then(function (photos) {
+        const found = (photos || []).some(function (p) { return p.name === fileName; });
+        const grid = document.getElementById('photoGrid-' + siteIdx);
+        if (grid) renderPhotoGrid(grid, photos);
+        if (found) {
+          const remaining = queueCountFor(siteIdx);
+          setSiteStatus(siteIdx, '업로드 완료: ' + fileName
+            + (remaining ? ' (남은 업로드 ' + remaining + '장)' : ''), 'ok');
+          uploadBusy = false;
+          processUploadQueue();
+        } else {
+          throw new Error('업로드는 보냈지만 목록에서 확인되지 않았습니다');
+        }
       })
       .catch(function (err) {
         item.attempts++;
         if (item.attempts < 5) {
           uploadQueue.unshift(item);
-          setSiteStatus(siteIdx, '업로드 실패, 재시도 중... (' + item.attempts + '회): ' + err.message, 'err');
+          setSiteStatus(siteIdx, '업로드 확인 실패, 재시도 중... (' + item.attempts + '회): ' + err.message, 'err');
         } else {
           setSiteStatus(siteIdx, '업로드 반복 실패: ' + err.message + ' — 네트워크 확인 후 다시 촬영해주세요.', 'err');
         }
@@ -756,21 +864,23 @@ function processUploadQueue() {
   reader.readAsDataURL(item.file);
 }
 
+function renderPhotoGrid(grid, photos) {
+  grid.innerHTML = '';
+  (photos || []).forEach(function (p) {
+    const a = document.createElement('a');
+    a.href = p.url;
+    a.target = '_blank';
+    a.textContent = p.name;
+    grid.appendChild(a);
+  });
+}
+
 function refreshPhotoList(siteIdx) {
   if (!selected) return;
   const grid = document.getElementById('photoGrid-' + siteIdx);
   if (!grid) return;
-  callApi('listPhotos', { waitingNo: selected.waitingNo, applicantName: selected.applicantName, siteIdx: siteIdx })
-    .then(function (photos) {
-      grid.innerHTML = '';
-      photos.forEach(function (p) {
-        const a = document.createElement('a');
-        a.href = p.url;
-        a.target = '_blank';
-        a.textContent = p.name;
-        grid.appendChild(a);
-      });
-    })
+  callApiRead('listPhotos', { waitingNo: selected.waitingNo, applicantName: selected.applicantName, siteIdx: siteIdx })
+    .then(function (photos) { renderPhotoGrid(grid, photos); })
     .catch(function () { /* 조용히 무시 */ });
 }
 </script>
