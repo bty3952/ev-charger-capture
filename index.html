@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>EV충전기 현장촬영</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root {
+    --blue: #2563eb;
+    --blue-dark: #1d4ed8;
+    --gray-bg: #f4f5f7;
+    --border: #d9dce1;
+    --green: #16a34a;
+    --red: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Malgun Gothic", sans-serif;
+    background: var(--gray-bg);
+    margin: 0;
+    padding: 16px;
+    color: #1f2430;
+  }
+  h1 { font-size: 20px; margin: 0 0 16px; }
+  .card {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .card h2 { font-size: 15px; margin: 0 0 10px; color: #55596b; }
+  input[type=file], input[type=text] {
+    width: 100%;
+    padding: 12px;
+    font-size: 16px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #fff;
+  }
+  button {
+    font-size: 16px;
+    padding: 12px 18px;
+    border-radius: 8px;
+    border: none;
+    background: var(--blue);
+    color: #fff;
+    cursor: pointer;
+    width: 100%;
+    margin-top: 8px;
+  }
+  button:active { background: var(--blue-dark); }
+  button:disabled { background: #a9b0bd; }
+  button.secondary { background: #fff; color: var(--blue); border: 1px solid var(--blue); }
+  .status { font-size: 13px; color: #666; margin-top: 8px; white-space: pre-line; }
+  .status.ok { color: var(--green); }
+  .status.err { color: var(--red); }
+  ul.results {
+    list-style: none; padding: 0; margin: 10px 0 0;
+    max-height: 220px; overflow-y: auto; border-top: 1px solid var(--border);
+  }
+  ul.results li {
+    padding: 10px 4px; border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center; cursor: pointer;
+  }
+  ul.results li:active { background: #f0f4ff; }
+  ul.results li .name { font-size: 15px; }
+  ul.results li .waitno { font-size: 13px; color: #888; }
+  .selected-box {
+    background: #eef4ff; border: 1px solid #c3d7fb; border-radius: 10px;
+    padding: 14px; margin-top: 10px;
+  }
+  .selected-box .title { font-weight: 600; font-size: 16px; }
+  .selected-box .sub { font-size: 13px; color: #667; margin-top: 2px; }
+  .photo-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+  .photo-grid a {
+    display: block; aspect-ratio: 1; background: #eee; border-radius: 8px; overflow: hidden;
+    text-decoration: none; display: flex; align-items: center; justify-content: center;
+    font-size: 11px; color: #999; border: 1px solid var(--border);
+  }
+  .hidden { display: none !important; }
+  .badge {
+    display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px;
+    background: #e8ecf3; color: #555; margin-left: 6px;
+  }
+  .site-panel {
+    border: 1px solid var(--border); border-radius: 10px; padding: 12px;
+    margin-top: 14px; background: #fafbfc;
+  }
+  .site-panel h3 { font-size: 15px; margin: 0 0 8px; }
+  .site-panel .status { margin-top: 6px; }
+  .camera-overlay {
+    position: fixed; inset: 0; background: #000; z-index: 1000;
+    display: flex; flex-direction: column;
+  }
+  .camera-overlay.hidden { display: none !important; }
+  .camera-overlay video { flex: 1; width: 100%; min-height: 0; object-fit: cover; background: #000; }
+  .camera-overlay .camera-bar {
+    padding: 12px 16px; background: #111; display: flex;
+    align-items: center; justify-content: space-between; gap: 10px;
+  }
+  .camera-overlay .count { color: #fff; font-size: 14px; }
+  .camera-overlay .spacer { width: 60px; flex-shrink: 0; }
+  .shutter-btn {
+    width: 68px; height: 68px; border-radius: 50%; background: #fff;
+    border: 4px solid #999; margin: 0; padding: 0; flex-shrink: 0;
+    touch-action: none; -webkit-user-select: none; user-select: none;
+  }
+  .shutter-btn:active, .shutter-btn.holding { background: #ff5252; }
+  .close-btn { background: transparent; color: #fff; border: 1px solid #666; width: auto; padding: 8px 14px; margin: 0; }
+  .camera-overlay .queue-status {
+    color: #9be29b; font-size: 12px; text-align: center; padding: 6px 0; background: #111; min-height: 16px;
+  }
+  .review-tray {
+    display: flex; gap: 6px; padding: 8px 10px; overflow-x: auto;
+    background: #111; border-top: 1px solid #333;
+  }
+  .review-tray.hidden { display: none !important; }
+  .review-tray .thumb {
+    position: relative; flex-shrink: 0; width: 56px; height: 56px;
+    border-radius: 8px; overflow: hidden; border: 2px solid #444;
+  }
+  .review-tray .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .review-tray .thumb .del {
+    position: absolute; top: 0; right: 0; width: 20px; height: 20px;
+    background: rgba(220,38,38,0.9); color: #fff; border: none; border-radius: 0 0 0 8px;
+    font-size: 13px; line-height: 20px; padding: 0; margin: 0; cursor: pointer;
+  }
+  .config-warning {
+    background: #fff3cd; border: 1px solid #ffe08a; color: #7a5b00;
+    border-radius: 10px; padding: 12px; margin-bottom: 16px; font-size: 13px;
+  }
+  .config-warning {
+    background: #fff3cd; border: 1px solid #ffe08a; color: #7a5b00;
+    border-radius: 10px; padding: 12px; margin-bottom: 16px; font-size: 13px;
+  }
+</style>
+</head>
+<body>
+
+<h1>EV충전기 현장촬영</h1>
+
+<div class="card config-warning hidden" id="configWarning">
+  ⚠️ API_URL이 아직 설정되지 않았습니다. capture.html 맨 아래 스크립트에서
+  <code>const API_URL = '...'</code> 부분을 실제 구글 앱스 스크립트 배포 URL로 바꿔주세요.
+</div>
+
+<div class="card hidden" id="loadingCard">
+  <div class="status" id="loadingStatus">불러오는 중...</div>
+</div>
+
+<div class="card hidden" id="uploadCard">
+  <h2>1. 신청관리.xlsx 업로드</h2>
+  <input type="file" id="xlsxInput" accept=".xlsx">
+  <div class="status" id="uploadStatus"></div>
+</div>
+
+<div class="card hidden" id="searchCard">
+  <h2>2. 대기번호 검색 <span class="badge" id="rosterCountBadge"></span></h2>
+  <input type="text" id="searchInput" inputmode="numeric" placeholder="대기번호를 입력하세요 (예: 2532)">
+  <ul class="results" id="searchResults"></ul>
+  <button class="secondary" id="reuploadBtn" style="margin-top:14px;">엑셀 다시 업로드(명단 갱신)</button>
+</div>
+
+<div class="card hidden" id="selectedCard">
+  <h2>3. 선택된 현장</h2>
+  <div class="selected-box">
+    <div class="title" id="selTitle"></div>
+    <div class="sub" id="selSub"></div>
+  </div>
+
+  <div id="siteCountBox">
+    <h2 style="margin-top:16px;">거점수 입력</h2>
+    <input type="text" id="siteCountInput" inputmode="numeric" placeholder="예: 3">
+    <button id="siteCountConfirmBtn">확인</button>
+    <div class="status" id="siteCountStatus"></div>
+  </div>
+
+  <div id="sitePanels" class="hidden"></div>
+  <button id="changeSiteCountBtn" class="secondary hidden">거점수 변경</button>
+
+  <!-- 실시간 카메라를 지원하지 않는 아주 오래된 브라우저에서만 쓰이는 예비용 입력 -->
+  <input type="file" id="cameraInput" accept="image/*" capture="environment" class="hidden">
+</div>
+
+<div class="camera-overlay hidden" id="cameraOverlay">
+  <div class="camera-bar">
+    <button type="button" class="close-btn" id="cameraCloseBtn">✕ 닫기</button>
+    <span class="count" id="cameraShotCount">0장 촬영됨</span>
+    <span class="spacer"></span>
+  </div>
+  <video id="cameraVideo" autoplay playsinline muted></video>
+  <div class="review-tray hidden" id="reviewTray"></div>
+  <div class="camera-bar">
+    <span class="spacer"></span>
+    <button type="button" class="shutter-btn" id="shutterBtn"></button>
+    <span class="spacer"></span>
+  </div>
+  <div class="queue-status" id="cameraQueueStatus"></div>
+</div>
+<canvas id="captureCanvas" class="hidden"></canvas>
+
+<script>
+// ====================================================================
+// ⚠️ 배포 후 반드시 채워야 하는 값입니다.
+// script.google.com에서 Code.gs를 웹 앱으로 배포하면 나오는
+// https://script.google.com/macros/s/xxxxxxxx/exec 형태의 URL을 그대로 넣으세요.
+// ====================================================================
+const API_URL = 'https://script.google.com/macros/s/AKfycbyn5qdy6f2KrwWJUTjtx2BA0LM-XgcHDAgmZOm9-AWuTJpkiwUgqoU2IX0--_XssMK-/exec';
+
+if (!API_URL || API_URL.indexOf('PUT_YOUR_') === 0) {
+  document.getElementById('configWarning').classList.remove('hidden');
+}
+
+// 구글 앱스 스크립트 API(Code.gs의 doPost)를 호출하는 공용 함수.
+// text/plain 으로 보내는 이유: CORS 사전요청(OPTIONS)을 피하기 위해서다
+// (앱스 스크립트가 사전요청에는 제대로 응답하지 않기 때문).
+function callApi(action, params) {
+  const body = Object.assign({ action: action }, params || {});
+  return fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(body),
+  })
+    .then(function (res) { return res.json(); })
+    .then(function (data) {
+      if (!data || !data.ok) throw new Error((data && data.error) || '알 수 없는 오류');
+      return data.result;
+    });
+}
+
+let rows = [];           // [{waitingNo, applicantName}]
+let filtered = [];
+let selected = null;      // {waitingNo, applicantName}
+
+const loadingCard = document.getElementById('loadingCard');
+const uploadCard = document.getElementById('uploadCard');
+const xlsxInput = document.getElementById('xlsxInput');
+const uploadStatus = document.getElementById('uploadStatus');
+const searchCard = document.getElementById('searchCard');
+const searchInput = document.getElementById('searchInput');
+const searchResults = document.getElementById('searchResults');
+const reuploadBtn = document.getElementById('reuploadBtn');
+const rosterCountBadge = document.getElementById('rosterCountBadge');
+const selectedCard = document.getElementById('selectedCard');
+const selTitle = document.getElementById('selTitle');
+const selSub = document.getElementById('selSub');
+const cameraInput = document.getElementById('cameraInput');
+
+// 페이지를 열 때 가장 먼저: 이미 저장된 명단(roster.json)이 있는지 확인한다.
+// 있으면 업로드 화면을 건너뛰고 바로 대기번호 검색 화면을 보여준다.
+loadingCard.classList.remove('hidden');
+callApi('getRoster', {})
+  .then(function (savedRows) {
+    loadingCard.classList.add('hidden');
+    if (savedRows && savedRows.length > 0) {
+      rows = savedRows;
+      searchCard.classList.remove('hidden');
+      rosterCountBadge.textContent = rows.length + '건';
+      searchInput.value = '';
+      renderResults('');
+    } else {
+      uploadCard.classList.remove('hidden');
+    }
+  })
+  .catch(function (err) {
+    loadingCard.classList.add('hidden');
+    uploadCard.classList.remove('hidden');
+    uploadStatus.textContent = '저장된 명단을 불러오지 못했습니다: ' + err.message;
+    uploadStatus.className = 'status err';
+  });
+
+reuploadBtn.addEventListener('click', function () {
+  uploadCard.classList.remove('hidden');
+  uploadStatus.textContent = '';
+  uploadStatus.className = 'status';
+  xlsxInput.value = '';
+  uploadCard.scrollIntoView({ behavior: 'smooth' });
+});
+
+xlsxInput.addEventListener('change', function (e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  uploadStatus.textContent = '엑셀 읽는 중...';
+  uploadStatus.className = 'status';
+  const reader = new FileReader();
+  reader.onload = function (evt) {
+    try {
+      const data = new Uint8Array(evt.target.result);
+      const wb = XLSX.read(data, { type: 'array' });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const grid = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null });
+
+      // 헤더 행을 자동으로 찾는다 ("대기 번호"라는 셀이 있는 행)
+      let headerRowIdx = -1, waitCol = -1, nameCol = -1;
+      for (let r = 0; r < Math.min(grid.length, 10); r++) {
+        const row = grid[r] || [];
+        const wi = row.findIndex(c => typeof c === 'string' && c.replace(/\s/g, '') === '대기번호');
+        if (wi !== -1) {
+          headerRowIdx = r;
+          waitCol = wi;
+          nameCol = row.findIndex(c => typeof c === 'string' && c.replace(/\s/g, '') === '신청자명');
+          break;
+        }
+      }
+      if (headerRowIdx === -1 || nameCol === -1) {
+        throw new Error('"대기 번호" 또는 "신청자명" 열을 찾지 못했습니다. 파일 형식을 확인해주세요.');
+      }
+
+      const seen = new Set();
+      rows = [];
+      for (let r = headerRowIdx + 1; r < grid.length; r++) {
+        const row = grid[r] || [];
+        const waitRaw = row[waitCol];
+        const nameRaw = row[nameCol];
+        if (waitRaw === null || waitRaw === undefined || waitRaw === '') continue;
+        if (!nameRaw) continue;
+        let waitingNo = waitRaw;
+        if (typeof waitingNo === 'number') waitingNo = String(Math.trunc(waitingNo));
+        else waitingNo = String(waitingNo).trim();
+        const applicantName = String(nameRaw).trim();
+        const key = waitingNo + '||' + applicantName;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        rows.push({ waitingNo, applicantName });
+      }
+
+      if (rows.length === 0) {
+        throw new Error('읽어온 대상이 없습니다.');
+      }
+
+      uploadStatus.textContent = rows.length + '건 확인됨. 구글 드라이브에 폴더 생성 및 명단 저장 중...';
+      callApi('uploadRoster', { rows: rows })
+        .then(onFoldersCreated)
+        .catch(onServerError);
+    } catch (err) {
+      uploadStatus.textContent = '오류: ' + err.message;
+      uploadStatus.className = 'status err';
+    }
+  };
+  reader.readAsArrayBuffer(file);
+});
+
+function onFoldersCreated(results) {
+  const okCount = results.filter(r => r.ok).length;
+  const failCount = results.length - okCount;
+  uploadStatus.textContent = '폴더 준비 완료: ' + okCount + '건'
+    + (failCount ? ' (실패 ' + failCount + '건)' : '')
+    + '. 명단이 저장되어 다음부터는 다시 업로드하지 않아도 됩니다.';
+  uploadStatus.className = 'status ok';
+  uploadCard.classList.add('hidden');
+  searchCard.classList.remove('hidden');
+  rosterCountBadge.textContent = rows.length + '건';
+  searchInput.value = '';
+  searchInput.focus();
+  renderResults('');
+}
+
+function onServerError(err) {
+  uploadStatus.textContent = '구글 드라이브 처리 중 오류: ' + err.message;
+  uploadStatus.className = 'status err';
+}
+
+searchInput.addEventListener('input', function () {
+  renderResults(searchInput.value.trim());
+});
+
+function renderResults(query) {
+  filtered = !query
+    ? rows
+    : rows.filter(r => r.waitingNo.includes(query) || r.applicantName.includes(query));
+  searchResults.innerHTML = '';
+  filtered.slice(0, 30).forEach(function (r) {
+    const li = document.createElement('li');
+    li.innerHTML = '<span class="name">' + r.applicantName + '</span>'
+      + '<span class="waitno">대기번호 ' + r.waitingNo + '</span>';
+    li.addEventListener('click', function () { selectRow(r); });
+    searchResults.appendChild(li);
+  });
+  if (filtered.length === 0) {
+    searchResults.innerHTML = '<li style="color:#999;">일치하는 결과가 없습니다.</li>';
+  }
+}
+
+const siteCountBox = document.getElementById('siteCountBox');
+const siteCountInput = document.getElementById('siteCountInput');
+const siteCountConfirmBtn = document.getElementById('siteCountConfirmBtn');
+const siteCountStatus = document.getElementById('siteCountStatus');
+const sitePanels = document.getElementById('sitePanels');
+const changeSiteCountBtn = document.getElementById('changeSiteCountBtn');
+
+let siteCount = 0;
+let activeSiteIdx = null; // 촬영 버튼을 눌러서 카메라를 여는 중인 거점 번호
+
+function selectRow(r) {
+  if (cameraOverlay && !cameraOverlay.classList.contains('hidden')) closeCamera();
+
+  selected = r;
+  siteCount = 0;
+  selTitle.textContent = r.applicantName;
+  selSub.textContent = '대기번호 ' + r.waitingNo;
+  selectedCard.classList.remove('hidden');
+
+  siteCountBox.classList.add('hidden');
+  sitePanels.classList.add('hidden');
+  sitePanels.innerHTML = '';
+  changeSiteCountBtn.classList.add('hidden');
+  siteCountStatus.textContent = '';
+  siteCountStatus.className = 'status';
+  siteCountInput.value = '';
+
+  callApi('getSiteCount', { waitingNo: r.waitingNo, applicantName: r.applicantName })
+    .then(function (existingCount) {
+      if (!selected || selected.waitingNo !== r.waitingNo || selected.applicantName !== r.applicantName) return;
+      if (existingCount && existingCount > 0) {
+        siteCount = existingCount;
+        renderSitePanels(existingCount);
+        sitePanels.classList.remove('hidden');
+        changeSiteCountBtn.classList.remove('hidden');
+        siteCountBox.classList.add('hidden');
+      } else {
+        siteCountBox.classList.remove('hidden');
+      }
+    })
+    .catch(function () {
+      siteCountBox.classList.remove('hidden');
+    });
+
+  selectedCard.scrollIntoView({ behavior: 'smooth' });
+}
+
+siteCountConfirmBtn.addEventListener('click', function () {
+  const n = parseInt(siteCountInput.value, 10);
+  if (!n || n < 1 || n > 50) {
+    siteCountStatus.textContent = '1~50 사이의 숫자를 입력해주세요.';
+    siteCountStatus.className = 'status err';
+    return;
+  }
+  siteCountStatus.textContent = '거점 폴더 생성 중...';
+  siteCountStatus.className = 'status';
+  siteCountConfirmBtn.disabled = true;
+
+  callApi('setSiteCount', { waitingNo: selected.waitingNo, applicantName: selected.applicantName, siteCount: n })
+    .then(function () {
+      siteCountConfirmBtn.disabled = false;
+      siteCount = n;
+      siteCountStatus.textContent = n + '개 거점 폴더 준비 완료';
+      siteCountStatus.className = 'status ok';
+      renderSitePanels(n);
+      sitePanels.classList.remove('hidden');
+      changeSiteCountBtn.classList.remove('hidden');
+    })
+    .catch(function (err) {
+      siteCountConfirmBtn.disabled = false;
+      siteCountStatus.textContent = '오류: ' + err.message;
+      siteCountStatus.className = 'status err';
+    });
+});
+
+changeSiteCountBtn.addEventListener('click', function () {
+  sitePanels.classList.add('hidden');
+  changeSiteCountBtn.classList.add('hidden');
+  siteCountBox.classList.remove('hidden');
+  siteCountInput.value = siteCount || '';
+  siteCountStatus.textContent = '거점수를 늘리면 기존 거점 폴더/사진은 그대로 유지됩니다.';
+  siteCountStatus.className = 'status';
+});
+
+function renderSitePanels(n) {
+  sitePanels.innerHTML = '';
+  for (let i = 1; i <= n; i++) {
+    const panel = document.createElement('div');
+    panel.className = 'site-panel';
+    panel.innerHTML =
+      '<h3>' + i + '거점</h3>' +
+      '<button class="shoot-btn" data-site="' + i + '">📷 ' + i + '거점 촬영</button>' +
+      '<div class="status" id="shootStatus-' + i + '"></div>' +
+      '<div class="photo-grid" id="photoGrid-' + i + '"></div>';
+    sitePanels.appendChild(panel);
+    refreshPhotoList(i);
+  }
+  sitePanels.querySelectorAll('.shoot-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      openCamera(parseInt(btn.getAttribute('data-site'), 10));
+    });
+  });
+}
+
+// ------------------------------------------------------------------
+// 실시간 카메라 촬영
+//
+// 이 페이지는 (구글 앱스 스크립트의 sandbox iframe이 아니라) 일반 정적 웹페이지로
+// 직접 호스팅되므로, getUserMedia로 화면 안에 진짜 실시간 카메라를 띄울 수 있다.
+// "N거점 촬영" 버튼을 누르면 카메라 화면이 뜨고, 하단 ● 버튼을 누를 때마다
+// 확인 절차 없이 그 자리에서 즉시 한 장씩 캡처된다. 카메라 화면은 "✕ 닫기"를
+// 누르기 전까지 계속 켜져 있으므로, 휴대폰 기본 카메라 앱처럼 계속 이어서
+// 촬영할 수 있다. 캡처된 사진은 업로드 완료를 기다리지 않고 바로 백그라운드
+// 업로드 대기열에 쌓인다.
+// (아주 오래된 브라우저 등 getUserMedia를 지원하지 않는 경우에만 예전 방식
+// (휴대폰 기본 카메라 앱 호출)으로 자동 전환된다.)
+// ------------------------------------------------------------------
+
+const cameraOverlay = document.getElementById('cameraOverlay');
+const cameraVideo = document.getElementById('cameraVideo');
+const cameraCloseBtn = document.getElementById('cameraCloseBtn');
+const shutterBtn = document.getElementById('shutterBtn');
+const cameraShotCount = document.getElementById('cameraShotCount');
+const cameraQueueStatus = document.getElementById('cameraQueueStatus');
+const captureCanvas = document.getElementById('captureCanvas');
+
+let currentStream = null;
+let shotCountThisSession = 0;
+
+function openCamera(siteIdx) {
+  activeSiteIdx = siteIdx;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    cameraInput.click();
+    return;
+  }
+  navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
+    .then(function (stream) {
+      currentStream = stream;
+      cameraVideo.srcObject = stream;
+      shotCountThisSession = 0;
+      clearReviewTray(); // 새 촬영 세션이므로 이전에 남아있던 임시 목록은 비운다
+      cameraShotCount.textContent = '0장 담김';
+      cameraQueueStatus.textContent = '';
+      cameraOverlay.classList.remove('hidden');
+    })
+    .catch(function () {
+      cameraInput.click();
+    });
+}
+
+// "✕ 닫기"를 누르면, 그때까지 미리보기에 남아있던(=삭제하지 않은) 사진들을
+// 한꺼번에 업로드하고 카메라를 닫는다. 미리보기에서 X로 지운 사진은 애초에
+// 업로드되지 않는다.
+function closeCamera() {
+  finalizeReviewTray();
+  if (currentStream) {
+    currentStream.getTracks().forEach(function (t) { t.stop(); });
+    currentStream = null;
+  }
+  cameraOverlay.classList.add('hidden');
+  if (activeSiteIdx) refreshPhotoList(activeSiteIdx);
+}
+
+cameraCloseBtn.addEventListener('click', closeCamera);
+
+// ------------------------------------------------------------------
+// 연사 촬영 + 미리보기에서 골라 업로드
+//
+// 셔터를 짧게 탭하면 한 장만 찍힌다. 셔터를 누른 채로 있으면(휴대폰 기본
+// 카메라의 "누르고 있으면 연사" 동작과 동일하게) 일정 간격으로 계속 찍혀서
+// 화면 아래 미리보기 줄에 쌓인다. 미리보기의 각 사진 오른쪽 위 ✕를 누르면
+// 그 사진은 삭제되어 업로드되지 않는다. "✕ 닫기"를 누르는 순간, 그때 미리보기에
+// 남아있는(=지우지 않은) 사진들만 구글 드라이브로 업로드되고 휴대폰에도 저장된다.
+// ------------------------------------------------------------------
+const reviewTrayEl = document.getElementById('reviewTray');
+let reviewTray = []; // [{id, blob, thumbUrl, siteIdx}]
+
+const HOLD_THRESHOLD_MS = 350; // 이보다 오래 누르고 있으면 "연사"로 판단
+const BURST_INTERVAL_MS = 180; // 연사 중 촬영 간격
+
+let holdTimer = null;
+let burstInterval = null;
+let isBursting = false;
+
+function captureFrameToTray() {
+  if (!currentStream || !activeSiteIdx) return;
+  const w = cameraVideo.videoWidth;
+  const h = cameraVideo.videoHeight;
+  if (!w || !h) return;
+  captureCanvas.width = w;
+  captureCanvas.height = h;
+  captureCanvas.getContext('2d').drawImage(cameraVideo, 0, 0, w, h);
+  captureCanvas.toBlob(function (blob) {
+    if (!blob) return;
+    const id = 't' + Date.now() + '_' + Math.floor(Math.random() * 100000);
+    const thumbUrl = URL.createObjectURL(blob);
+    reviewTray.push({ id: id, blob: blob, thumbUrl: thumbUrl, siteIdx: activeSiteIdx });
+    renderReviewTray();
+  }, 'image/jpeg', 0.85);
+}
+
+function renderReviewTray() {
+  reviewTrayEl.classList.toggle('hidden', reviewTray.length === 0);
+  reviewTrayEl.innerHTML = '';
+  reviewTray.forEach(function (item) {
+    const div = document.createElement('div');
+    div.className = 'thumb';
+    div.innerHTML = '<img src="' + item.thumbUrl + '">'
+      + '<button type="button" class="del" data-id="' + item.id + '">✕</button>';
+    reviewTrayEl.appendChild(div);
+  });
+  reviewTrayEl.querySelectorAll('.del').forEach(function (btn) {
+    btn.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      removeFromReviewTray(btn.getAttribute('data-id'));
+    });
+  });
+  cameraShotCount.textContent = reviewTray.length + '장 담김';
+}
+
+function removeFromReviewTray(id) {
+  const idx = reviewTray.findIndex(function (item) { return item.id === id; });
+  if (idx === -1) return;
+  URL.revokeObjectURL(reviewTray[idx].thumbUrl);
+  reviewTray.splice(idx, 1);
+  renderReviewTray();
+}
+
+function clearReviewTray() {
+  reviewTray.forEach(function (item) { URL.revokeObjectURL(item.thumbUrl); });
+  reviewTray = [];
+  renderReviewTray();
+}
+
+// 미리보기에 남아있는(=지우지 않은) 사진들을 실제로 업로드 대기열에 넣고,
+// 휴대폰에도 저장한 뒤 미리보기를 비운다.
+function finalizeReviewTray() {
+  reviewTray.forEach(function (item) {
+    saveBlobToDevice(item.blob, makeLocalFileName(item.siteIdx));
+    enqueueUpload(item.siteIdx, item.blob, 'image/jpeg');
+  });
+  reviewTray.forEach(function (item) { URL.revokeObjectURL(item.thumbUrl); });
+  reviewTray = [];
+  reviewTrayEl.classList.add('hidden');
+  reviewTrayEl.innerHTML = '';
+}
+
+function stopShutterHold() {
+  if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+  if (burstInterval) { clearInterval(burstInterval); burstInterval = null; }
+  shutterBtn.classList.remove('holding');
+  if (!isBursting) {
+    captureFrameToTray(); // 짧게 눌렀다 뗀 경우 = 한 장만 촬영
+  }
+  isBursting = false;
+}
+
+shutterBtn.addEventListener('pointerdown', function (ev) {
+  ev.preventDefault();
+  isBursting = false;
+  holdTimer = setTimeout(function () {
+    isBursting = true;
+    shutterBtn.classList.add('holding');
+    captureFrameToTray();
+    burstInterval = setInterval(captureFrameToTray, BURST_INTERVAL_MS);
+  }, HOLD_THRESHOLD_MS);
+});
+shutterBtn.addEventListener('pointerup', stopShutterHold);
+shutterBtn.addEventListener('pointerleave', function () {
+  if (isBursting) stopShutterHold(); // 연사 중 손가락이 버튼을 벗어나면 종료
+});
+shutterBtn.addEventListener('pointercancel', stopShutterHold);
+
+// 촬영한 사진을 구글 드라이브 업로드와는 별개로 이 휴대폰에도 즉시 내려받아 남겨둔다.
+function saveBlobToDevice(blob, fileName) {
+  try {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
+  } catch (e) { /* 로컬 저장 실패는 무시 — 업로드에는 영향 없음 */ }
+}
+
+function makeLocalFileName(siteIdx) {
+  const ts = new Date();
+  const pad = function (n) { return String(n).padStart(2, '0'); };
+  return (selected ? selected.waitingNo : 'photo') + '_' + siteIdx + '거점_'
+    + ts.getFullYear() + pad(ts.getMonth() + 1) + pad(ts.getDate()) + '_'
+    + pad(ts.getHours()) + pad(ts.getMinutes()) + pad(ts.getSeconds())
+    + '_' + Math.floor(Math.random() * 900 + 100) + '.jpg';
+}
+
+// 예전 방식(휴대폰 기본 카메라 앱) 대체 경로 — getUserMedia를 못 쓰는 경우에만 사용됨.
+cameraInput.addEventListener('change', function (e) {
+  const file = e.target.files[0];
+  const siteIdx = activeSiteIdx;
+  cameraInput.value = '';
+  if (!file || !selected || !siteIdx) return;
+  saveBlobToDevice(file, makeLocalFileName(siteIdx));
+  enqueueUpload(siteIdx, file, file.type || 'image/jpeg');
+});
+
+// ------------------------------------------------------------------
+// 백그라운드 업로드 대기열
+// ------------------------------------------------------------------
+let uploadQueue = [];
+let uploadBusy = false;
+
+function queueCountFor(siteIdx) {
+  return uploadQueue.filter(function (q) { return q.siteIdx === siteIdx; }).length;
+}
+
+function setSiteStatus(siteIdx, text, cls) {
+  const el = document.getElementById('shootStatus-' + siteIdx);
+  if (el) { el.textContent = text; el.className = 'status' + (cls ? ' ' + cls : ''); }
+  if (cameraOverlay && !cameraOverlay.classList.contains('hidden') && activeSiteIdx === siteIdx) {
+    cameraQueueStatus.textContent = text;
+  }
+}
+
+function enqueueUpload(siteIdx, fileOrBlob, mimeType) {
+  uploadQueue.push({ siteIdx: siteIdx, file: fileOrBlob, mimeType: mimeType, attempts: 0 });
+  setSiteStatus(siteIdx, '업로드 대기/진행 중: ' + queueCountFor(siteIdx) + '장 (계속 촬영하셔도 됩니다)');
+  processUploadQueue();
+}
+
+function processUploadQueue() {
+  if (uploadBusy || uploadQueue.length === 0) return;
+  uploadBusy = true;
+  const item = uploadQueue.shift();
+  const siteIdx = item.siteIdx;
+
+  const reader = new FileReader();
+  reader.onload = function (evt) {
+    const base64Full = evt.target.result;
+    const base64Data = base64Full.split(',')[1];
+    const fileName = makeLocalFileName(siteIdx);
+
+    callApi('uploadPhoto', {
+      waitingNo: selected.waitingNo,
+      applicantName: selected.applicantName,
+      siteIdx: siteIdx,
+      base64Data: base64Data,
+      mimeType: item.mimeType,
+      fileName: fileName,
+    })
+      .then(function (res) {
+        const remaining = queueCountFor(siteIdx);
+        setSiteStatus(siteIdx, '업로드 완료: ' + res.fileName
+          + (remaining ? ' (남은 업로드 ' + remaining + '장)' : ''), 'ok');
+        refreshPhotoList(siteIdx);
+        uploadBusy = false;
+        processUploadQueue();
+      })
+      .catch(function (err) {
+        item.attempts++;
+        if (item.attempts < 5) {
+          uploadQueue.unshift(item);
+          setSiteStatus(siteIdx, '업로드 실패, 재시도 중... (' + item.attempts + '회): ' + err.message, 'err');
+        } else {
+          setSiteStatus(siteIdx, '업로드 반복 실패: ' + err.message + ' — 네트워크 확인 후 다시 촬영해주세요.', 'err');
+        }
+        uploadBusy = false;
+        setTimeout(processUploadQueue, 3000);
+      });
+  };
+  reader.readAsDataURL(item.file);
+}
+
+function refreshPhotoList(siteIdx) {
+  if (!selected) return;
+  const grid = document.getElementById('photoGrid-' + siteIdx);
+  if (!grid) return;
+  callApi('listPhotos', { waitingNo: selected.waitingNo, applicantName: selected.applicantName, siteIdx: siteIdx })
+    .then(function (photos) {
+      grid.innerHTML = '';
+      photos.forEach(function (p) {
+        const a = document.createElement('a');
+        a.href = p.url;
+        a.target = '_blank';
+        a.textContent = p.name;
+        grid.appendChild(a);
+      });
+    })
+    .catch(function () { /* 조용히 무시 */ });
+}
+</script>
+</body>
+</html>
