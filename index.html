@@ -105,11 +105,31 @@
   .shutter-btn {
     width: 68px; height: 68px; border-radius: 50%; background: #fff;
     border: 4px solid #999; margin: 0; padding: 0; flex-shrink: 0;
+    touch-action: none; -webkit-user-select: none; user-select: none;
   }
-  .shutter-btn:active { background: #ddd; }
+  .shutter-btn:active, .shutter-btn.holding { background: #ff5252; }
   .close-btn { background: transparent; color: #fff; border: 1px solid #666; width: auto; padding: 8px 14px; margin: 0; }
   .camera-overlay .queue-status {
     color: #9be29b; font-size: 12px; text-align: center; padding: 6px 0; background: #111; min-height: 16px;
+  }
+  .review-tray {
+    display: flex; gap: 6px; padding: 8px 10px; overflow-x: auto;
+    background: #111; border-top: 1px solid #333;
+  }
+  .review-tray.hidden { display: none !important; }
+  .review-tray .thumb {
+    position: relative; flex-shrink: 0; width: 56px; height: 56px;
+    border-radius: 8px; overflow: hidden; border: 2px solid #444;
+  }
+  .review-tray .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .review-tray .thumb .del {
+    position: absolute; top: 0; right: 0; width: 20px; height: 20px;
+    background: rgba(220,38,38,0.9); color: #fff; border: none; border-radius: 0 0 0 8px;
+    font-size: 13px; line-height: 20px; padding: 0; margin: 0; cursor: pointer;
+  }
+  .config-warning {
+    background: #fff3cd; border: 1px solid #ffe08a; color: #7a5b00;
+    border-radius: 10px; padding: 12px; margin-bottom: 16px; font-size: 13px;
   }
   .config-warning {
     background: #fff3cd; border: 1px solid #ffe08a; color: #7a5b00;
@@ -171,6 +191,7 @@
     <span class="spacer"></span>
   </div>
   <video id="cameraVideo" autoplay playsinline muted></video>
+  <div class="review-tray hidden" id="reviewTray"></div>
   <div class="camera-bar">
     <span class="spacer"></span>
     <button type="button" class="shutter-btn" id="shutterBtn"></button>
@@ -502,7 +523,8 @@ function openCamera(siteIdx) {
       currentStream = stream;
       cameraVideo.srcObject = stream;
       shotCountThisSession = 0;
-      cameraShotCount.textContent = '0장 촬영됨';
+      clearReviewTray(); // 새 촬영 세션이므로 이전에 남아있던 임시 목록은 비운다
+      cameraShotCount.textContent = '0장 담김';
       cameraQueueStatus.textContent = '';
       cameraOverlay.classList.remove('hidden');
     })
@@ -511,7 +533,11 @@ function openCamera(siteIdx) {
     });
 }
 
+// "✕ 닫기"를 누르면, 그때까지 미리보기에 남아있던(=삭제하지 않은) 사진들을
+// 한꺼번에 업로드하고 카메라를 닫는다. 미리보기에서 X로 지운 사진은 애초에
+// 업로드되지 않는다.
 function closeCamera() {
+  finalizeReviewTray();
   if (currentStream) {
     currentStream.getTracks().forEach(function (t) { t.stop(); });
     currentStream = null;
@@ -521,6 +547,114 @@ function closeCamera() {
 }
 
 cameraCloseBtn.addEventListener('click', closeCamera);
+
+// ------------------------------------------------------------------
+// 연사 촬영 + 미리보기에서 골라 업로드
+//
+// 셔터를 짧게 탭하면 한 장만 찍힌다. 셔터를 누른 채로 있으면(휴대폰 기본
+// 카메라의 "누르고 있으면 연사" 동작과 동일하게) 일정 간격으로 계속 찍혀서
+// 화면 아래 미리보기 줄에 쌓인다. 미리보기의 각 사진 오른쪽 위 ✕를 누르면
+// 그 사진은 삭제되어 업로드되지 않는다. "✕ 닫기"를 누르는 순간, 그때 미리보기에
+// 남아있는(=지우지 않은) 사진들만 구글 드라이브로 업로드되고 휴대폰에도 저장된다.
+// ------------------------------------------------------------------
+const reviewTrayEl = document.getElementById('reviewTray');
+let reviewTray = []; // [{id, blob, thumbUrl, siteIdx}]
+
+const HOLD_THRESHOLD_MS = 350; // 이보다 오래 누르고 있으면 "연사"로 판단
+const BURST_INTERVAL_MS = 180; // 연사 중 촬영 간격
+
+let holdTimer = null;
+let burstInterval = null;
+let isBursting = false;
+
+function captureFrameToTray() {
+  if (!currentStream || !activeSiteIdx) return;
+  const w = cameraVideo.videoWidth;
+  const h = cameraVideo.videoHeight;
+  if (!w || !h) return;
+  captureCanvas.width = w;
+  captureCanvas.height = h;
+  captureCanvas.getContext('2d').drawImage(cameraVideo, 0, 0, w, h);
+  captureCanvas.toBlob(function (blob) {
+    if (!blob) return;
+    const id = 't' + Date.now() + '_' + Math.floor(Math.random() * 100000);
+    const thumbUrl = URL.createObjectURL(blob);
+    reviewTray.push({ id: id, blob: blob, thumbUrl: thumbUrl, siteIdx: activeSiteIdx });
+    renderReviewTray();
+  }, 'image/jpeg', 0.85);
+}
+
+function renderReviewTray() {
+  reviewTrayEl.classList.toggle('hidden', reviewTray.length === 0);
+  reviewTrayEl.innerHTML = '';
+  reviewTray.forEach(function (item) {
+    const div = document.createElement('div');
+    div.className = 'thumb';
+    div.innerHTML = '<img src="' + item.thumbUrl + '">'
+      + '<button type="button" class="del" data-id="' + item.id + '">✕</button>';
+    reviewTrayEl.appendChild(div);
+  });
+  reviewTrayEl.querySelectorAll('.del').forEach(function (btn) {
+    btn.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      removeFromReviewTray(btn.getAttribute('data-id'));
+    });
+  });
+  cameraShotCount.textContent = reviewTray.length + '장 담김';
+}
+
+function removeFromReviewTray(id) {
+  const idx = reviewTray.findIndex(function (item) { return item.id === id; });
+  if (idx === -1) return;
+  URL.revokeObjectURL(reviewTray[idx].thumbUrl);
+  reviewTray.splice(idx, 1);
+  renderReviewTray();
+}
+
+function clearReviewTray() {
+  reviewTray.forEach(function (item) { URL.revokeObjectURL(item.thumbUrl); });
+  reviewTray = [];
+  renderReviewTray();
+}
+
+// 미리보기에 남아있는(=지우지 않은) 사진들을 실제로 업로드 대기열에 넣고,
+// 휴대폰에도 저장한 뒤 미리보기를 비운다.
+function finalizeReviewTray() {
+  reviewTray.forEach(function (item) {
+    saveBlobToDevice(item.blob, makeLocalFileName(item.siteIdx));
+    enqueueUpload(item.siteIdx, item.blob, 'image/jpeg');
+  });
+  reviewTray.forEach(function (item) { URL.revokeObjectURL(item.thumbUrl); });
+  reviewTray = [];
+  reviewTrayEl.classList.add('hidden');
+  reviewTrayEl.innerHTML = '';
+}
+
+function stopShutterHold() {
+  if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+  if (burstInterval) { clearInterval(burstInterval); burstInterval = null; }
+  shutterBtn.classList.remove('holding');
+  if (!isBursting) {
+    captureFrameToTray(); // 짧게 눌렀다 뗀 경우 = 한 장만 촬영
+  }
+  isBursting = false;
+}
+
+shutterBtn.addEventListener('pointerdown', function (ev) {
+  ev.preventDefault();
+  isBursting = false;
+  holdTimer = setTimeout(function () {
+    isBursting = true;
+    shutterBtn.classList.add('holding');
+    captureFrameToTray();
+    burstInterval = setInterval(captureFrameToTray, BURST_INTERVAL_MS);
+  }, HOLD_THRESHOLD_MS);
+});
+shutterBtn.addEventListener('pointerup', stopShutterHold);
+shutterBtn.addEventListener('pointerleave', function () {
+  if (isBursting) stopShutterHold(); // 연사 중 손가락이 버튼을 벗어나면 종료
+});
+shutterBtn.addEventListener('pointercancel', stopShutterHold);
 
 // 촬영한 사진을 구글 드라이브 업로드와는 별개로 이 휴대폰에도 즉시 내려받아 남겨둔다.
 function saveBlobToDevice(blob, fileName) {
@@ -544,25 +678,6 @@ function makeLocalFileName(siteIdx) {
     + pad(ts.getHours()) + pad(ts.getMinutes()) + pad(ts.getSeconds())
     + '_' + Math.floor(Math.random() * 900 + 100) + '.jpg';
 }
-
-shutterBtn.addEventListener('click', function () {
-  if (!currentStream || !activeSiteIdx) return;
-  const w = cameraVideo.videoWidth;
-  const h = cameraVideo.videoHeight;
-  if (!w || !h) return;
-  captureCanvas.width = w;
-  captureCanvas.height = h;
-  const ctx = captureCanvas.getContext('2d');
-  ctx.drawImage(cameraVideo, 0, 0, w, h);
-  captureCanvas.toBlob(function (blob) {
-    if (!blob) return;
-    shotCountThisSession++;
-    cameraShotCount.textContent = shotCountThisSession + '장 촬영됨';
-    const fileName = makeLocalFileName(activeSiteIdx);
-    saveBlobToDevice(blob, fileName);
-    enqueueUpload(activeSiteIdx, blob, 'image/jpeg');
-  }, 'image/jpeg', 0.85);
-});
 
 // 예전 방식(휴대폰 기본 카메라 앱) 대체 경로 — getUserMedia를 못 쓰는 경우에만 사용됨.
 cameraInput.addEventListener('change', function (e) {
