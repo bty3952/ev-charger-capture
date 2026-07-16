@@ -107,6 +107,21 @@
   .focus-ring.pulse { animation: focusPulse 0.5s ease; }
   @keyframes focusPulse { 0% { transform: scale(1.3); opacity: 1; } 100% { transform: scale(1); opacity: 1; } }
   .close-btn.torch-on { background: #ffcc33; color: #111; border-color: #ffcc33; }
+
+  /* 화면 방향 잠금(screen.orientation.lock)이 지원되지 않는 기기/브라우저에서
+     휴대폰을 가로로 돌렸을 때를 대비한 안전장치. CSS로 화면 전체를 강제로
+     회전시키는 방식은 터치 좌표(탭 초점, 핀치줌 등)가 어긋나는 부작용이 있어
+     쓰지 않고, 대신 실제로 가로가 되더라도 버튼이 겹치거나 화면 밖으로
+     밀려나지 않도록만 레이아웃을 보정한다.
+     (기본적인 방향 고정은 openCamera()에서 전체화면 + screen.orientation.lock으로
+     처리하며, 이게 지원되는 대부분의 최신 안드로이드 브라우저에서는 가로로
+     돌려도 화면이 세로로 고정된 채 유지된다.) */
+  @media screen and (orientation: landscape) {
+    .camera-overlay .camera-bar {
+      padding-left: max(12px, env(safe-area-inset-left));
+      padding-right: max(12px, env(safe-area-inset-right));
+    }
+  }
   .camera-overlay .camera-bar {
     padding: 12px 16px; background: #111; display: flex;
     align-items: center; justify-content: space-between; gap: 10px;
@@ -825,7 +840,7 @@ function renderSitePanels(n) {
       '<h3>' + i + '거점</h3>' +
       '<div class="btn-row">' +
       '<button class="shoot-btn" data-site="' + i + '">📷 ' + i + '거점 촬영</button>' +
-      '<button type="button" class="native-cam-btn" data-site="' + i + '">📸 기본카메라 한장</button>' +
+      '<button type="button" class="native-cam-btn" data-site="' + i + '">📸 기본카메라</button>' +
       '<button type="button" class="upload-btn" data-site="' + i + '">⬆ 사진 업로드</button>' +
       '</div>' +
       '<div class="status" id="shootStatus-' + i + '"></div>' +
@@ -1005,6 +1020,50 @@ if (voiceToggleBtn) {
 }
 updateVoiceToggleLabel_();
 
+// 안드로이드 브라우저 대부분은 "전체화면 상태가 아니면" screen.orientation.lock()이
+// 거부된다(SecurityError/NotSupportedError). 그래서 카메라를 열 때 촬영 화면을
+// 먼저 전체화면으로 만든 다음 세로로 잠그는 순서로 시도한다 — 이렇게 해야 실제로
+// 휴대폰을 가로로 돌려도 화면과 버튼이 세로로 고정된 채 유지된다. 전체화면/잠금
+// 자체를 지원하지 않는 브라우저(예: 일부 iOS Safari)에서는 조용히 실패하고, 그 경우
+// 위 CSS의 안전장치(레이아웃이 깨지지 않게만 보정)로 대체된다.
+let didRequestFullscreenForCamera_ = false;
+
+function lockPortraitForCamera_() {
+  didRequestFullscreenForCamera_ = false;
+  try {
+    const el = cameraOverlay;
+    const reqFs = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen;
+    if (reqFs) {
+      Promise.resolve(reqFs.call(el)).then(function () {
+        didRequestFullscreenForCamera_ = true;
+        if (screen.orientation && screen.orientation.lock) {
+          screen.orientation.lock('portrait').catch(function () {});
+        }
+      }).catch(function () {
+        // 전체화면 자체가 막힌 경우, 그래도 밑져야 본전으로 잠금만 시도해본다.
+        if (screen.orientation && screen.orientation.lock) {
+          screen.orientation.lock('portrait').catch(function () {});
+        }
+      });
+    } else if (screen.orientation && screen.orientation.lock) {
+      screen.orientation.lock('portrait').catch(function () {});
+    }
+  } catch (e) { /* 지원하지 않는 브라우저는 그냥 가로 회전이 허용됨 */ }
+}
+
+function unlockPortraitForCamera_() {
+  try {
+    if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock();
+  } catch (e) {}
+  try {
+    if (didRequestFullscreenForCamera_ && document.fullscreenElement) {
+      const exitFs = document.exitFullscreen || document.webkitExitFullscreen || document.mozCancelFullScreen;
+      if (exitFs) exitFs.call(document);
+    }
+  } catch (e) {}
+  didRequestFullscreenForCamera_ = false;
+}
+
 function openCamera(siteIdx) {
   activeSiteIdx = siteIdx;
   // 버튼 클릭(사용자 제스처) 시점에 미리 오디오를 켜둬야, 나중에 음성 명령으로
@@ -1032,6 +1091,7 @@ function openCamera(siteIdx) {
       cameraShotCount.textContent = '0장 담김';
       cameraQueueStatus.textContent = '';
       cameraOverlay.classList.remove('hidden');
+      lockPortraitForCamera_(); // 가로 회전 시에도 버튼 위치가 안 움직이게 고정 시도
       updateWakeLock();
       startVoiceRecognition_(); // 음성 촬영이 켜져 있으면 카메라와 함께 듣기 시작
 
@@ -1151,6 +1211,7 @@ function closeCamera() {
   imageCapture = null;
   if (focusRing) focusRing.classList.add('hidden');
   cameraOverlay.classList.add('hidden');
+  unlockPortraitForCamera_();
   if (activeSiteIdx) refreshPhotoList(activeSiteIdx);
   updateWakeLock();
 }
