@@ -96,6 +96,17 @@
   }
   .camera-overlay.hidden { display: none !important; }
   .camera-overlay video { flex: 1; width: 100%; min-height: 0; object-fit: cover; background: #000; }
+  .video-wrap { position: relative; flex: 1; min-height: 0; display: flex; }
+  .video-wrap video { flex: 1; }
+  .focus-ring {
+    position: absolute; width: 76px; height: 76px; margin-left: -38px; margin-top: -38px;
+    border: 2px solid #fff; border-radius: 8px; pointer-events: none;
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.4); transition: opacity 0.25s ease, transform 0.15s ease;
+  }
+  .focus-ring.hidden { display: none !important; }
+  .focus-ring.pulse { animation: focusPulse 0.5s ease; }
+  @keyframes focusPulse { 0% { transform: scale(1.3); opacity: 1; } 100% { transform: scale(1); opacity: 1; } }
+  .close-btn.torch-on { background: #ffcc33; color: #111; border-color: #ffcc33; }
   .camera-overlay .camera-bar {
     padding: 12px 16px; background: #111; display: flex;
     align-items: center; justify-content: space-between; gap: 10px;
@@ -228,10 +239,13 @@
     <span class="count" id="cameraShotCount">0장 촬영됨</span>
     <button type="button" class="close-btn" id="voiceToggleBtn">🎤 음성 켜짐</button>
   </div>
-  <video id="cameraVideo" autoplay playsinline muted></video>
+  <div class="video-wrap" id="videoWrap">
+    <video id="cameraVideo" autoplay playsinline muted></video>
+    <div class="focus-ring hidden" id="focusRing"></div>
+  </div>
   <div class="review-tray hidden" id="reviewTray"></div>
   <div class="camera-bar">
-    <span class="spacer"></span>
+    <button type="button" class="close-btn hidden" id="torchToggleBtn">🔦 조명 켜기</button>
     <button type="button" class="shutter-btn" id="shutterBtn"></button>
     <span class="spacer"></span>
   </div>
@@ -864,8 +878,13 @@ const shutterBtn = document.getElementById('shutterBtn');
 const cameraShotCount = document.getElementById('cameraShotCount');
 const cameraQueueStatus = document.getElementById('cameraQueueStatus');
 const captureCanvas = document.getElementById('captureCanvas');
+const videoWrap = document.getElementById('videoWrap');
+const focusRing = document.getElementById('focusRing');
+const torchToggleBtn = document.getElementById('torchToggleBtn');
 
 let currentStream = null;
+let currentTrack = null;   // 현재 카메라 스트림의 video track (초점/노출/손전등 제어용)
+let imageCapture = null;   // 지원 기기에서 하드웨어 정지사진 캡처에 사용
 let shotCountThisSession = 0;
 
 // ------------------------------------------------------------------
@@ -1003,10 +1022,107 @@ function openCamera(siteIdx) {
       cameraOverlay.classList.remove('hidden');
       updateWakeLock();
       startVoiceRecognition_(); // 음성 촬영이 켜져 있으면 카메라와 함께 듣기 시작
+
+      // 휴대폰 기본 카메라 앱 수준의 화질을 내기 위해, 미리보기 비디오 프레임을
+      // canvas로 캡처하는 대신(압축/다운샘플된 미리보기용 스트림이라 화질이 떨어짐)
+      // 카메라 하드웨어의 실제 정지사진 캡처 파이프라인을 쓰는 ImageCapture API를
+      // 우선 사용한다. 지원하지 않는 브라우저는 기존 canvas 캡처로 자동 대체된다.
+      currentTrack = stream.getVideoTracks()[0] || null;
+      imageCapture = null;
+      if (currentTrack && window.ImageCapture) {
+        try { imageCapture = new ImageCapture(currentTrack); } catch (e) { imageCapture = null; }
+      }
+      applyContinuousFocusExposure_(currentTrack);
+      setupTorchToggle_(currentTrack);
     })
     .catch(function () {
       cameraInput.click();
     });
+}
+
+// 연속 자동초점/자동노출 — 기기가 지원하면 켜서, 손으로 계속 초점을 맞춰야
+// 하는 문제 없이 기본 카메라 앱처럼 자동으로 선명하게 유지되게 한다.
+function applyContinuousFocusExposure_(track) {
+  if (!track || !track.getCapabilities) return;
+  try {
+    const caps = track.getCapabilities();
+    const advanced = [];
+    if (caps.focusMode && caps.focusMode.indexOf('continuous') !== -1) {
+      advanced.push({ focusMode: 'continuous' });
+    }
+    if (caps.exposureMode && caps.exposureMode.indexOf('continuous') !== -1) {
+      advanced.push({ exposureMode: 'continuous' });
+    }
+    if (advanced.length) track.applyConstraints({ advanced: advanced }).catch(function () {});
+  } catch (e) { /* 지원하지 않는 기기는 무시 */ }
+}
+
+// 손전등(torch) — 지하주차장 등 어두운 현장에서 명판/측정기 글씨가 잘 보이도록.
+let torchOn = false;
+
+function setupTorchToggle_(track) {
+  torchOn = false;
+  if (torchToggleBtn) {
+    torchToggleBtn.classList.remove('torch-on');
+    torchToggleBtn.textContent = '🔦 조명 켜기';
+  }
+  if (!track || !track.getCapabilities) {
+    if (torchToggleBtn) torchToggleBtn.classList.add('hidden');
+    return;
+  }
+  try {
+    const caps = track.getCapabilities();
+    if (caps.torch) {
+      if (torchToggleBtn) torchToggleBtn.classList.remove('hidden');
+    } else {
+      if (torchToggleBtn) torchToggleBtn.classList.add('hidden');
+    }
+  } catch (e) {
+    if (torchToggleBtn) torchToggleBtn.classList.add('hidden');
+  }
+}
+
+function toggleTorch_() {
+  if (!currentTrack) return;
+  torchOn = !torchOn;
+  currentTrack.applyConstraints({ advanced: [{ torch: torchOn }] }).catch(function () {
+    torchOn = !torchOn; // 실패하면 상태 되돌리기
+  }).then(function () {
+    if (torchToggleBtn) {
+      torchToggleBtn.classList.toggle('torch-on', torchOn);
+      torchToggleBtn.textContent = torchOn ? '🔦 조명 끄기' : '🔦 조명 켜기';
+    }
+  });
+}
+
+if (torchToggleBtn) torchToggleBtn.addEventListener('click', toggleTorch_);
+
+// 화면을 탭하면 그 지점에 초점을 맞춘다(기본 카메라 앱의 "탭하여 초점" 동작).
+if (videoWrap && cameraVideo) {
+  videoWrap.addEventListener('click', function (ev) {
+    if (!currentTrack || !currentTrack.getCapabilities) return;
+    let caps;
+    try { caps = currentTrack.getCapabilities(); } catch (e) { return; }
+    const rect = videoWrap.getBoundingClientRect();
+    const x = (ev.clientX - rect.left) / rect.width;
+    const y = (ev.clientY - rect.top) / rect.height;
+    if (focusRing) {
+      focusRing.style.left = ev.clientX - rect.left + 'px';
+      focusRing.style.top = ev.clientY - rect.top + 'px';
+      focusRing.classList.remove('hidden');
+      focusRing.classList.remove('pulse');
+      void focusRing.offsetWidth; // 재시작을 위한 리플로우 강제
+      focusRing.classList.add('pulse');
+    }
+    if (caps.pointsOfInterest) {
+      currentTrack.applyConstraints({
+        advanced: [{ pointsOfInterest: [{ x: x, y: y }], focusMode: 'single-shot' }],
+      }).then(function () {
+        // 탭 초점 이후에도 계속 자동으로 초점이 맞도록 연속 모드로 복귀
+        setTimeout(function () { applyContinuousFocusExposure_(currentTrack); }, 1200);
+      }).catch(function () {});
+    }
+  });
 }
 
 // "✕ 닫기"를 누르면, 그때까지 미리보기에 남아있던(=삭제하지 않은) 사진들을
@@ -1019,6 +1135,9 @@ function closeCamera() {
     currentStream.getTracks().forEach(function (t) { t.stop(); });
     currentStream = null;
   }
+  currentTrack = null;
+  imageCapture = null;
+  if (focusRing) focusRing.classList.add('hidden');
   cameraOverlay.classList.add('hidden');
   if (activeSiteIdx) refreshPhotoList(activeSiteIdx);
   updateWakeLock();
@@ -1099,22 +1218,54 @@ function playShutterSound() {
   } catch (e) { /* 소리 재생 실패는 무시 — 촬영 자체에는 영향 없음 */ }
 }
 
+// 미리보기 비디오 프레임을 canvas에 그려서 캡처하는 예전 방식(ImageCapture를
+// 지원하지 않는 브라우저용 대체 수단). 미리보기 스트림은 화면 표시용으로
+// 압축/다운샘플되어 있어서 실제 카메라 하드웨어의 정지사진보다 화질이 떨어진다.
+function captureFrameFromVideo_() {
+  return new Promise(function (resolve, reject) {
+    const w = cameraVideo.videoWidth;
+    const h = cameraVideo.videoHeight;
+    if (!w || !h) { reject(new Error('no video frame')); return; }
+    captureCanvas.width = w;
+    captureCanvas.height = h;
+    captureCanvas.getContext('2d').drawImage(cameraVideo, 0, 0, w, h);
+    captureCanvas.toBlob(function (blob) {
+      if (!blob) reject(new Error('toBlob failed'));
+      else resolve(blob);
+    }, 'image/jpeg', 0.92); // 측정기 숫자/명판 글씨 판독성을 위해 압축률을 낮게(화질은 높게) 잡는다
+  });
+}
+
+function addBlobToReviewTray_(blob, siteIdx) {
+  const id = 't' + Date.now() + '_' + Math.floor(Math.random() * 100000);
+  const thumbUrl = URL.createObjectURL(blob);
+  reviewTray.push({ id: id, blob: blob, thumbUrl: thumbUrl, siteIdx: siteIdx });
+  renderReviewTray();
+}
+
+// 연사 중 ImageCapture.takePhoto()가 다음 촬영이 시작되기 전에 반드시 끝나도록
+// 막아주는 플래그. takePhoto()는 canvas 캡처보다 느릴 수 있어서(하드웨어 파이프라인을
+// 실제로 타기 때문), 고정 간격 타이머만 믿으면 이전 촬영이 안 끝났는데 다음 호출이
+// 겹쳐 들어갈 수 있다.
+let burstCaptureBusy = false;
+
 function captureFrameToTray() {
   if (!currentStream || !activeSiteIdx) return;
-  const w = cameraVideo.videoWidth;
-  const h = cameraVideo.videoHeight;
-  if (!w || !h) return;
+  if (burstCaptureBusy) return; // 이전 촬영이 아직 진행 중이면 이번 타이머 틱은 건너뛴다
+  burstCaptureBusy = true;
+  const siteIdx = activeSiteIdx;
+
+  // 휴대폰 기본 카메라 앱과 동급의 화질을 위해, 지원되는 기기에서는 미리보기
+  // 프레임 캡처 대신 카메라의 실제 정지사진 캡처 파이프라인(ImageCapture)을 쓴다.
+  const capturePromise = imageCapture
+    ? imageCapture.takePhoto().catch(function () { return captureFrameFromVideo_(); })
+    : captureFrameFromVideo_();
+
   playShutterSound();
-  captureCanvas.width = w;
-  captureCanvas.height = h;
-  captureCanvas.getContext('2d').drawImage(cameraVideo, 0, 0, w, h);
-  captureCanvas.toBlob(function (blob) {
-    if (!blob) return;
-    const id = 't' + Date.now() + '_' + Math.floor(Math.random() * 100000);
-    const thumbUrl = URL.createObjectURL(blob);
-    reviewTray.push({ id: id, blob: blob, thumbUrl: thumbUrl, siteIdx: activeSiteIdx });
-    renderReviewTray();
-  }, 'image/jpeg', 0.92); // 측정기 숫자/명판 글씨 판독성을 위해 압축률을 낮게(화질은 높게) 잡는다
+  capturePromise
+    .then(function (blob) { addBlobToReviewTray_(blob, siteIdx); })
+    .catch(function () { /* 이번 한 장만 실패 — 연사/전체 촬영은 계속 진행 */ })
+    .then(function () { burstCaptureBusy = false; });
 }
 
 // 미리보기 줄의 작은 썸네일은 잘 보이는지 확인하기 어려우므로, 썸네일을 터치하면
