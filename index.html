@@ -143,9 +143,10 @@
     background: #fff3cd; border: 1px solid #ffe08a; color: #7a5b00;
     border-radius: 10px; padding: 12px; margin-bottom: 16px; font-size: 13px;
   }
-  .site-panel .btn-row { display: flex; gap: 8px; margin-top: 8px; }
-  .site-panel .btn-row button { width: 50%; margin-top: 0; }
+  .site-panel .btn-row { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .site-panel .btn-row button { flex: 1 1 0; width: auto; margin-top: 0; min-width: 0; font-size: 13px; padding: 10px 4px; }
   .site-panel .btn-row button.upload-btn { background: #fff; color: var(--blue); border: 1px solid var(--blue); }
+  .site-panel .btn-row button.native-cam-btn { background: #fff; color: #333; border: 1px solid #999; }
   .memo-card textarea {
     width: 100%; min-height: 100px; padding: 12px; font-size: 15px;
     border: 1px solid var(--border); border-radius: 8px; font-family: inherit; resize: vertical;
@@ -824,6 +825,7 @@ function renderSitePanels(n) {
       '<h3>' + i + '거점</h3>' +
       '<div class="btn-row">' +
       '<button class="shoot-btn" data-site="' + i + '">📷 ' + i + '거점 촬영</button>' +
+      '<button type="button" class="native-cam-btn" data-site="' + i + '">📸 기본카메라 한장</button>' +
       '<button type="button" class="upload-btn" data-site="' + i + '">⬆ 사진 업로드</button>' +
       '</div>' +
       '<div class="status" id="shootStatus-' + i + '"></div>' +
@@ -834,6 +836,16 @@ function renderSitePanels(n) {
   sitePanels.querySelectorAll('.shoot-btn').forEach(function (btn) {
     btn.addEventListener('click', function () {
       openCamera(parseInt(btn.getAttribute('data-site'), 10));
+    });
+  });
+  sitePanels.querySelectorAll('.native-cam-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      // 스마트폰 기본 카메라 앱을 직접 열어서 한 장 찍고 바로 돌아오는 방식.
+      // 웹 표준상 기본 카메라 앱은 "한 장 찍고 즉시 페이지로 복귀"만 가능해서
+      // 앱 내 연속 촬영처럼 여러 장을 이어 찍을 수는 없다 — 명판/측정기처럼
+      // 한 장만 특히 선명하게 찍고 싶을 때 쓰는 용도.
+      activeSiteIdx = parseInt(btn.getAttribute('data-site'), 10);
+      cameraInput.click();
     });
   });
   sitePanels.querySelectorAll('.upload-btn').forEach(function (btn) {
@@ -1481,6 +1493,7 @@ cameraInput.addEventListener('change', function (e) {
   if (!file || !selected || !siteIdx) return;
   saveBlobToDevice(file, makeLocalFileName(siteIdx));
   enqueueUpload(siteIdx, file, file.type || 'image/jpeg');
+  setSiteStatus(siteIdx, '기본카메라 사진 1장 업로드 대기열에 추가됨');
 });
 
 // ------------------------------------------------------------------
