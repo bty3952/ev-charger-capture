@@ -202,6 +202,14 @@
   <button id="changeSiteCountBtn" class="secondary hidden">거점수 변경</button>
 
   <div class="memo-card">
+    <h2 style="margin-top:16px;">관련 서류(보조사업 신청서 PDF, 화면 캡처 등)</h2>
+    <button type="button" class="secondary" id="docUploadBtn">📄 서류 업로드</button>
+    <input type="file" id="docUploadInput" accept=".pdf,image/*" multiple class="hidden">
+    <div class="status" id="docStatus"></div>
+    <div class="photo-grid" id="docList"></div>
+  </div>
+
+  <div class="memo-card">
     <h2 style="margin-top:16px;">특이사항 메모</h2>
     <textarea id="memoInput" placeholder="현장에서 특이사항이 있으면 기록해주세요"></textarea>
     <button type="button" class="secondary" id="memoSaveBtn">메모 저장</button>
@@ -392,6 +400,10 @@ const galleryUploadInput = document.getElementById('galleryUploadInput');
 const memoInput = document.getElementById('memoInput');
 const memoSaveBtn = document.getElementById('memoSaveBtn');
 const memoStatus = document.getElementById('memoStatus');
+const docUploadBtn = document.getElementById('docUploadBtn');
+const docUploadInput = document.getElementById('docUploadInput');
+const docStatus = document.getElementById('docStatus');
+const docList = document.getElementById('docList');
 
 // 페이지를 열 때 가장 먼저: 이미 저장된 명단(roster.json)이 있는지 확인한다.
 // 있으면 업로드 화면을 건너뛰고 바로 대기번호 검색 화면을 보여준다.
@@ -580,6 +592,11 @@ function selectRow(r) {
   memoStatus.className = 'status';
   loadMemo_(r, 3);
 
+  docStatus.textContent = '';
+  docStatus.className = 'status';
+  docList.innerHTML = '';
+  refreshDocumentList_(r);
+
   siteCountBox.classList.add('hidden');
   sitePanels.classList.add('hidden');
   sitePanels.innerHTML = '';
@@ -701,6 +718,87 @@ memoSaveBtn.addEventListener('click', function () {
       memoStatus.textContent = '저장 실패: ' + err.message + ' — 다시 눌러서 저장해주세요.';
       memoStatus.className = 'status err';
     });
+});
+
+// ------------------------------------------------------------------
+// 관련 서류 업로드 — 보조사업 신청서 PDF, 화면 캡처(CID표) 등을 촬영 사진과는
+// 별개로 "대기번호-신청자명" 폴더 바로 아래(거점 하위 폴더 말고)에 저장한다.
+// 사용자가 구글 드라이브에 직접 파일을 넣어도 같은 폴더이므로 여기 목록에 함께 보인다.
+// 촬영 사진 업로드와 마찬가지로 서버 쪽이 같은 파일명이면 중복 저장하지 않는다.
+// ------------------------------------------------------------------
+function renderDocList_(docs) {
+  docList.innerHTML = '';
+  (docs || []).forEach(function (d) {
+    const a = document.createElement('a');
+    a.href = d.url;
+    a.target = '_blank';
+    a.textContent = d.name;
+    docList.appendChild(a);
+  });
+}
+
+function refreshDocumentList_(r) {
+  callApiRead('listDocuments', { waitingNo: r.waitingNo, applicantName: r.applicantName })
+    .then(function (docs) {
+      if (!selected || selected.waitingNo !== r.waitingNo || selected.applicantName !== r.applicantName) return;
+      renderDocList_(docs);
+    })
+    .catch(function () { /* 조용히 무시 */ });
+}
+
+docUploadBtn.addEventListener('click', function () {
+  if (!selected) return;
+  docUploadInput.click();
+});
+
+docUploadInput.addEventListener('change', function (e) {
+  const files = Array.from(e.target.files || []);
+  docUploadInput.value = '';
+  if (!files.length || !selected) return;
+  const r = selected;
+  let remaining = files.length;
+  let failCount = 0;
+  docStatus.textContent = '업로드 중... (0/' + files.length + ')';
+  docStatus.className = 'status';
+
+  files.forEach(function (file) {
+    const reader = new FileReader();
+    reader.onload = function (evt) {
+      const base64Data = evt.target.result.split(',')[1];
+      callApiWrite('uploadDocument', {
+        waitingNo: r.waitingNo,
+        applicantName: r.applicantName,
+        base64Data: base64Data,
+        mimeType: file.type || 'application/octet-stream',
+        fileName: file.name,
+      })
+        .then(function () { return callApiRead('listDocuments', { waitingNo: r.waitingNo, applicantName: r.applicantName }); })
+        .then(function (docs) {
+          if (selected && selected.waitingNo === r.waitingNo && selected.applicantName === r.applicantName) renderDocList_(docs);
+          const found = (docs || []).some(function (d) { return d.name === file.name; });
+          if (!found) failCount++;
+        })
+        .catch(function () { failCount++; })
+        .then(function () { finishOneDocUpload_(); });
+    };
+    reader.onerror = function () { failCount++; finishOneDocUpload_(); };
+    reader.readAsDataURL(file);
+  });
+
+  function finishOneDocUpload_() {
+    remaining--;
+    if (remaining > 0) {
+      docStatus.textContent = '업로드 중... (' + (files.length - remaining) + '/' + files.length + ')';
+      return;
+    }
+    if (failCount === 0) {
+      docStatus.textContent = '업로드 완료(' + files.length + '건).';
+      docStatus.className = 'status ok';
+    } else {
+      docStatus.textContent = failCount + '건 업로드 실패 — 다시 시도해주세요.';
+      docStatus.className = 'status err';
+    }
+  }
 });
 
 function renderSitePanels(n) {
