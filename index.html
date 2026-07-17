@@ -96,8 +96,16 @@
   }
   .camera-overlay.hidden { display: none !important; }
   .camera-overlay video { flex: 1; width: 100%; min-height: 0; object-fit: cover; background: #000; }
-  .video-wrap { position: relative; flex: 1; min-height: 0; display: flex; }
-  .video-wrap video { flex: 1; }
+  /* (2026-07) 미리보기가 화면 전체(flex:1)를 채우다 보니 기본 카메라 앱보다
+     촬영 화면이 훨씬 커 보인다는 피드백을 받았다. 실제 촬영 결과물이 4:3(예:
+     4080×3060)이므로, 미리보기도 그 비율의 박스로 고정해서 기본 카메라처럼
+     보이게 하고, 남는 공간은 검은 여백(.camera-spacer)으로 채운다. */
+  .video-wrap {
+    position: relative; flex: 0 0 auto; width: 100%; aspect-ratio: 4 / 3;
+    display: flex; background: #000;
+  }
+  .video-wrap video { width: 100%; height: 100%; object-fit: cover; }
+  .camera-spacer { flex: 1; min-height: 0; background: #000; }
   .focus-ring {
     position: absolute; width: 76px; height: 76px; margin-left: -38px; margin-top: -38px;
     border: 2px solid #fff; border-radius: 8px; pointer-events: none;
@@ -108,15 +116,26 @@
   @keyframes focusPulse { 0% { transform: scale(1.3); opacity: 1; } 100% { transform: scale(1); opacity: 1; } }
   .close-btn.torch-on { background: #ffcc33; color: #111; border-color: #ffcc33; }
 
-  /* 화면 방향 잠금(screen.orientation.lock)이 지원되지 않는 기기/브라우저에서
-     휴대폰을 가로로 돌렸을 때를 대비한 안전장치. CSS로 화면 전체를 강제로
-     회전시키는 방식은 터치 좌표(탭 초점, 핀치줌 등)가 어긋나는 부작용이 있어
-     쓰지 않고, 대신 실제로 가로가 되더라도 버튼이 겹치거나 화면 밖으로
-     밀려나지 않도록만 레이아웃을 보정한다.
-     (기본적인 방향 고정은 openCamera()에서 전체화면 + screen.orientation.lock으로
-     처리하며, 이게 지원되는 대부분의 최신 안드로이드 브라우저에서는 가로로
-     돌려도 화면이 세로로 고정된 채 유지된다.) */
+  /* (2026-07 수정: 사용자 요청으로 다시 켬) screen.orientation.lock()이 안 먹히는
+     기기/브라우저(설치되지 않은 일반 브라우저 탭에서는 흔히 실패한다)에서
+     휴대폰을 가로로 돌리면 화면 전체가(버튼 아이콘까지) 같이 돌아가버리는
+     문제가 있었다. 이걸 막기 위해 카메라/확인 화면(둘 다 position:fixed로 전체
+     화면을 덮는 오버레이)만 CSS로 강제로 반대 방향 90도 돌려서 항상 세로로
+     보이게 고정한다. 알려진 부작용: 이 두 화면이 실제로 가로 상태일 때 탭
+     초점/핀치줌의 터치 좌표가 어긋날 수 있다 — 그래서 예전엔 일부러 꺼뒀었는데,
+     방향 고정을 우선하기로 하고 다시 켰다. 안 맞으면 알려달라고 안내할 것.
+     (rotate 방향은 한쪽으로만 맞을 수 있다 — 반대로 돌렸을 때 뒤집혀 보이면
+     90deg <-> -90deg로 바꿔야 한다.) */
   @media screen and (orientation: landscape) {
+    .camera-overlay, .photo-viewer {
+      position: fixed;
+      top: 0;
+      left: 100%;
+      width: 100vh;
+      height: 100vw;
+      transform-origin: 0 0;
+      transform: rotate(90deg);
+    }
     .camera-overlay .camera-bar {
       padding-left: max(12px, env(safe-area-inset-left));
       padding-right: max(12px, env(safe-area-inset-right));
@@ -166,7 +185,8 @@
   }
   .photo-viewer.hidden { display: none !important; }
   .photo-viewer .viewer-bar {
-    padding: 12px 16px; background: #111; display: flex;
+    padding: 12px 16px; padding-bottom: max(20px, calc(env(safe-area-inset-bottom) + 12px));
+    background: #111; display: flex;
     align-items: center; justify-content: space-between; gap: 10px; color: #fff; font-size: 13px;
   }
   .photo-viewer .viewer-stage {
@@ -252,6 +272,7 @@
     <video id="cameraVideo" autoplay playsinline muted></video>
     <div class="focus-ring hidden" id="focusRing"></div>
   </div>
+  <div class="camera-spacer"></div>
   <div class="camera-bar bottom-bar">
     <button type="button" class="close-btn hidden" id="torchToggleBtn">🔦 조명 켜기</button>
     <button type="button" class="shutter-btn" id="shutterBtn"></button>
@@ -261,12 +282,12 @@
 </div>
 
 <div class="photo-viewer hidden" id="photoViewer">
+  <div class="viewer-stage" id="viewerStage">
+    <img id="viewerImg" draggable="false">
+  </div>
   <div class="viewer-bar">
     <button type="button" class="close-btn" id="viewerRetryBtn">↺ 다시 촬영</button>
     <button type="button" class="close-btn confirm-btn" id="viewerConfirmBtn">✓ 확인</button>
-  </div>
-  <div class="viewer-stage" id="viewerStage">
-    <img id="viewerImg" draggable="false">
   </div>
 </div>
 
