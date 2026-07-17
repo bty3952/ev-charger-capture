@@ -770,8 +770,21 @@ function renderDocList_(docs) {
   });
 }
 
+// R2 업로드 키: <대기번호>/docs/<파일명> -- 사진(<대기번호>/<거점번호>/<파일명>)과 구분되는 자리.
+function docKey_(waitingNo, fileName) {
+  return waitingNo + '/docs/' + fileName;
+}
+
+function listDocsFromR2_(waitingNo) {
+  const prefix = waitingNo + '/docs/';
+  const prefixPath = prefix.split('/').map(encodeURIComponent).join('/');
+  return fetch(WORKER_URL + '/list/' + prefixPath, { cache: 'no-store' })
+    .then(function (resp) { return resp.json(); })
+    .then(function (data) { return (data && data.items) || []; });
+}
+
 function refreshDocumentList_(r) {
-  callApiRead('listDocuments', { waitingNo: r.waitingNo, applicantName: r.applicantName })
+  listDocsFromR2_(r.waitingNo)
     .then(function (docs) {
       if (!selected || selected.waitingNo !== r.waitingNo || selected.applicantName !== r.applicantName) return;
       renderDocList_(docs);
@@ -795,27 +808,22 @@ docUploadInput.addEventListener('change', function (e) {
   docStatus.className = 'status';
 
   files.forEach(function (file) {
-    const reader = new FileReader();
-    reader.onload = function (evt) {
-      const base64Data = evt.target.result.split(',')[1];
-      callApiWrite('uploadDocument', {
-        waitingNo: r.waitingNo,
-        applicantName: r.applicantName,
-        base64Data: base64Data,
-        mimeType: file.type || 'application/octet-stream',
-        fileName: file.name,
+    const key = docKey_(r.waitingNo, file.name);
+    const keyPath = key.split('/').map(encodeURIComponent).join('/');
+    fetch(WORKER_URL + '/upload/' + keyPath, {
+      method: 'PUT',
+      headers: { 'Content-Type': file.type || 'application/octet-stream' },
+      body: file,
+    })
+      .then(function (resp) {
+        if (!resp.ok) throw new Error('업로드 실패 (status ' + resp.status + ')');
+        return listDocsFromR2_(r.waitingNo);
       })
-        .then(function () { return callApiRead('listDocuments', { waitingNo: r.waitingNo, applicantName: r.applicantName }); })
-        .then(function (docs) {
-          if (selected && selected.waitingNo === r.waitingNo && selected.applicantName === r.applicantName) renderDocList_(docs);
-          const found = (docs || []).some(function (d) { return d.name === file.name; });
-          if (!found) failCount++;
-        })
-        .catch(function () { failCount++; })
-        .then(function () { finishOneDocUpload_(); });
-    };
-    reader.onerror = function () { failCount++; finishOneDocUpload_(); };
-    reader.readAsDataURL(file);
+      .then(function (docs) {
+        if (selected && selected.waitingNo === r.waitingNo && selected.applicantName === r.applicantName) renderDocList_(docs);
+      })
+      .catch(function () { failCount++; })
+      .then(function () { finishOneDocUpload_(); });
   });
 
   function finishOneDocUpload_() {
