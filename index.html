@@ -289,6 +289,9 @@
 // ====================================================================
 const API_URL = 'https://script.google.com/macros/s/AKfycbyn5qdy6f2KrwWJUTjtx2BA0LM-XgcHDAgmZOm9-AWuTJpkiwUgqoU2IX0--_XssMK-/exec';
 
+// 사진 업로드/조회 전용 -- Cloudflare R2를 통해 직접 저장합니다(구글 앱스 스크립트보다 훨씬 빠름).
+const WORKER_URL = 'https://round-hill-4d45.bty3952.workers.dev';
+
 if (!API_URL || API_URL.indexOf('PUT_YOUR_') === 0) {
   document.getElementById('configWarning').classList.remove('hidden');
 }
@@ -1704,30 +1707,34 @@ function processUploadQueue() {
 // 서버(Code.gs의 uploadPhoto)가 같은 파일명이 이미 있으면 다시 만들지 않도록(멱등) 처리해
 // 두었으므로, 여기서는 업로드 전에 미리 조회해서 확인하는 절차 없이 바로 보낸다 — 왕복 한 번이
 // 줄어드는 만큼 빨라진다. 재시도로 같은 사진이 두 번 보내져도 서버 쪽에서 중복 생성을 막는다.
+// R2 업로드 키: <대기번호>/<거점번호>/<파일명> -- Worker의 /list/<prefix> 조회와 짝이 맞아야 한다.
+function photoKey_(waitingNo, siteIdx, fileName) {
+  return waitingNo + '/' + siteIdx + '/' + fileName;
+}
+
 function doUploadOne_(item) {
-  const reader = new FileReader();
-  reader.onload = function (evt) {
-    const base64Data = evt.target.result.split(',')[1];
-    callApiWrite('uploadPhoto', {
-      waitingNo: item.waitingNo,
-      applicantName: item.applicantName,
-      siteIdx: item.siteIdx,
-      base64Data: base64Data,
-      mimeType: item.mimeType,
-      fileName: item.fileName,
+  const key = photoKey_(item.waitingNo, item.siteIdx, item.fileName);
+  const keyPath = key.split('/').map(encodeURIComponent).join('/');
+  fetch(WORKER_URL + '/upload/' + keyPath, {
+    method: 'PUT',
+    headers: { 'Content-Type': item.mimeType || 'application/octet-stream' },
+    body: item.file,
+  })
+    .then(function (resp) {
+      if (!resp.ok) throw new Error('업로드 실패 (status ' + resp.status + ')');
+      return listPhotosFromR2_(item.waitingNo, item.siteIdx);
     })
-      .then(function () {
-        return callApiRead('listPhotos', { waitingNo: item.waitingNo, applicantName: item.applicantName, siteIdx: item.siteIdx });
-      })
-      .then(function (photos) {
-        const found = (photos || []).some(function (p) { return p.name === item.fileName; });
-        if (found) { onUploadItemDone_(item, photos); }
-        else { onUploadItemFailed_(item, new Error('업로드는 보냈지만 목록에서 확인되지 않았습니다')); }
-      })
-      .catch(function (err) { onUploadItemFailed_(item, err); });
-  };
-  reader.onerror = function () { onUploadItemFailed_(item, new Error('사진 파일을 읽지 못했습니다')); };
-  reader.readAsDataURL(item.file);
+    .then(function (photos) { onUploadItemDone_(item, photos); })
+    .catch(function (err) { onUploadItemFailed_(item, err); });
+}
+
+// Worker의 /list/<prefix> 엔드포인트로 특정 거점의 사진 목록을 조회한다.
+function listPhotosFromR2_(waitingNo, siteIdx) {
+  const prefix = waitingNo + '/' + siteIdx + '/';
+  const prefixPath = prefix.split('/').map(encodeURIComponent).join('/');
+  return fetch(WORKER_URL + '/list/' + prefixPath, { cache: 'no-store' })
+    .then(function (resp) { return resp.json(); })
+    .then(function (data) { return (data && data.items) || []; });
 }
 
 function onUploadItemDone_(item, photos) {
@@ -1778,7 +1785,7 @@ function refreshPhotoList(siteIdx) {
   if (!selected) return;
   const grid = document.getElementById('photoGrid-' + siteIdx);
   if (!grid) return;
-  callApiRead('listPhotos', { waitingNo: selected.waitingNo, applicantName: selected.applicantName, siteIdx: siteIdx })
+  listPhotosFromR2_(selected.waitingNo, siteIdx)
     .then(function (photos) { renderPhotoGrid(grid, photos); })
     .catch(function () { /* 조용히 무시 */ });
 }
