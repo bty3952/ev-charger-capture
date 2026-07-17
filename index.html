@@ -292,6 +292,40 @@ const API_URL = 'https://script.google.com/macros/s/AKfycbyn5qdy6f2KrwWJUTjtx2BA
 // 사진 업로드/조회 전용 -- Cloudflare R2를 통해 직접 저장합니다(구글 앱스 스크립트보다 훨씬 빠름).
 const WORKER_URL = 'https://round-hill-4d45.bty3952.workers.dev';
 
+// 명단(대기번호 검색용 roster) 조회/저장 -- 최상위 고정 키 'roster.json'에 JSON 배열로 저장한다.
+// (사진: <대기번호>/<거점번호>/..., 서류: <대기번호>/docs/... 와 같은 R2 버킷, 다른 자리.)
+function getRosterFromR2_() {
+  return fetch(WORKER_URL + '/upload/roster.json', { cache: 'no-store' })
+    .then(function (resp) {
+      if (resp.status === 404) return [];
+      if (!resp.ok) throw new Error('명단 조회 실패 (status ' + resp.status + ')');
+      return resp.json();
+    });
+}
+
+function saveRosterToR2_(rows) {
+  return fetch(WORKER_URL + '/upload/roster.json', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(rows),
+  }).then(function (resp) {
+    if (!resp.ok) throw new Error('명단 저장 실패 (status ' + resp.status + ')');
+    return rows;
+  });
+}
+
+// R2는 구글 앱스 스크립트처럼 서버 쪽에서 기존 명단과 자동으로 합쳐주지 않는 단순
+// 저장소이므로, 새로 업로드할 때 기존 명단 + 새 행을 여기서 직접 합친다(중복 제거).
+function mergeRosterRows_(existing, incoming) {
+  const merged = (existing || []).slice();
+  const seen = new Set(merged.map(function (r) { return r.waitingNo + '||' + r.applicantName; }));
+  (incoming || []).forEach(function (r) {
+    const key = r.waitingNo + '||' + r.applicantName;
+    if (!seen.has(key)) { seen.add(key); merged.push(r); }
+  });
+  return merged;
+}
+
 if (!API_URL || API_URL.indexOf('PUT_YOUR_') === 0) {
   document.getElementById('configWarning').classList.remove('hidden');
 }
@@ -441,7 +475,7 @@ const docList = document.getElementById('docList');
 // 페이지를 열 때 가장 먼저: 이미 저장된 명단(roster.json)이 있는지 확인한다.
 // 있으면 업로드 화면을 건너뛰고 바로 대기번호 검색 화면을 보여준다.
 loadingCard.classList.remove('hidden');
-callApiRead('getRoster', {})
+getRosterFromR2_()
   .then(function (savedRows) {
     loadingCard.classList.add('hidden');
     if (savedRows && savedRows.length > 0) {
@@ -520,25 +554,25 @@ xlsxInput.addEventListener('change', function (e) {
         throw new Error('읽어온 대상이 없습니다.');
       }
 
-      uploadStatus.textContent = rows.length + '건 확인됨. 구글 드라이브에 폴더 생성 및 명단 저장 중...';
-      // 저장(쓰기)은 응답 내용을 읽을 수 없으므로, 제출이 끝나면 조회(읽기)로
-      // 실제로 저장됐는지 다시 확인한다.
-      callApiWrite('uploadRoster', { rows: rows })
-        .then(function () { return callApiRead('getRoster', {}); })
+      uploadStatus.textContent = rows.length + '건 확인됨. R2에 명단 저장 중...';
+      // R2는 서버 쪽에서 자동으로 기존 명단과 합쳐주지 않으므로, 여기서 기존 명단을
+      // 먼저 읽어와 이번에 올린 행들과 합친(중복 제거) 뒤 통째로 다시 저장한다.
+      getRosterFromR2_()
+        .then(function (existingRows) { return mergeRosterRows_(existingRows, rows); })
+        .then(function (merged) { return saveRosterToR2_(merged); })
         .then(onFoldersCreated)
         .catch(onServerError);
 
       // 대기번호/신청자명만 뽑은 것과 별개로, 충전요금·설치방식 등 다른 열까지 담긴
-      // 원본 엑셀 파일 자체도 최상위 폴더에 그대로 저장해둔다(나중에 보고서 만들 때
+      // 원본 엑셀 파일 자체도 R2에 고정 키로 그대로 저장해둔다(나중에 보고서 만들 때
       // 다시 첨부하지 않아도 되도록). 핵심 흐름(명단 저장)을 막지 않도록 별도로 진행한다.
       try {
-        const xlsxBase64 = uint8ToBase64_(data);
-        callApiWrite('uploadRosterFile', {
-          base64Data: xlsxBase64,
-          mimeType: file.type || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-          fileName: file.name,
+        fetch(WORKER_URL + '/upload/roster.xlsx', {
+          method: 'PUT',
+          headers: { 'Content-Type': file.type || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+          body: file,
         }).catch(function () { /* 실패해도 명단 저장 자체에는 영향 없음 */ });
-      } catch (e) { /* 변환 실패해도 명단 저장 자체에는 영향 없음 */ }
+      } catch (e) { /* 실패해도 명단 저장 자체에는 영향 없음 */ }
     } catch (err) {
       uploadStatus.textContent = '오류: ' + err.message;
       uploadStatus.className = 'status err';
