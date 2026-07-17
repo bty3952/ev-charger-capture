@@ -1077,7 +1077,12 @@ function lockPortraitForCamera_() {
     const el = cameraOverlay;
     const reqFs = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen;
     if (reqFs) {
-      Promise.resolve(reqFs.call(el)).then(function () {
+      // navigationUI:'hide' 는 Fullscreen API 표준 옵션으로, 브라우저에게
+      // 전체화면 진입 시 뜨는 "전체 화면을 종료하려면..." 안내 UI를 최대한
+      // 띄우지 말라고 요청하는 용도다(Chrome/Chromium 계열에서 지원). 이
+      // 옵션을 안 주면 el.requestFullscreen()과 동일하게 동작하므로, 지원 안
+      // 하는 브라우저에서도 안전하다.
+      Promise.resolve(reqFs.call(el, { navigationUI: 'hide' })).then(function () {
         didRequestFullscreenForCamera_ = true;
         if (screen.orientation && screen.orientation.lock) {
           screen.orientation.lock('portrait').catch(function () {});
