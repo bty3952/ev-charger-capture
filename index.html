@@ -95,21 +95,23 @@
     display: flex; flex-direction: column;
   }
   .camera-overlay.hidden { display: none !important; }
-  /* (2026-07) 미리보기 박스를 4:3(padding-bottom 75%)으로 딱 맞춰봤더니
-     이번엔 "화면이 너무 작다"는 피드백을 받았다. 기본 카메라 앱은 실제로는
-     상/하단 바를 뺀 나머지 공간을 거의 그대로 미리보기로 채우고(결과물만
-     4:3으로 저장), 화면에 보이는 미리보기 자체를 4:3 박스로 딱 자르지는
-     않는다. 그래서 미리보기는 다시 위/아래 바 사이의 남는 공간을 최대한
-     채우도록(flex:1) 하고, 실제 저장되는 사진의 4:3 비율은 촬영 후
-     처리(캔버스 크롭/회전) 쪽에서만 보장한다. */
+  /* (2026-07) 미리보기 박스 비율을 처음엔 가로형 4:3(width:height = 4:3,
+     padding-bottom 75%)으로 잘못 잡았다 — 그래서 세로로 든 폰 화면에서
+     실제보다 훨씬 짧고 작아 보였다. 사용자가 보내준 기본 카메라 스크린샷을
+     보면 실제 미리보기는 "세로로 긴 3:4 박스"(width:height = 3:4, 즉
+     height = width × 4/3)이다 — 사진 결과물이 가로 4:3(4080×3060)으로
+     나오는 것과, 화면에 보이는 세로 미리보기 박스의 모양은 서로 다른
+     이야기다(폰을 세로로 들고 찍은 원본은 세로가 더 긴 3:4이고, 그걸 촬영
+     후처리에서 가로로 회전시켜 4:3 결과물을 만든다). 그래서 padding-bottom을
+     133.33%(=4/3)로 바꿔서 기본 카메라와 같은 세로 박스 비율로 맞춘다. */
   .video-wrap {
-    position: relative; flex: 1; min-height: 0; width: 100%;
-    display: flex; background: #000; overflow: hidden;
+    position: relative; flex: 0 0 auto; width: 100%;
+    height: 0; padding-bottom: 133.333%; overflow: hidden; background: #000;
   }
   .video-wrap video {
-    width: 100%; height: 100%; object-fit: cover;
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover;
   }
-  .camera-spacer { display: none; }
+  .camera-spacer { flex: 1; min-height: 0; background: #000; display: block; }
   .focus-ring {
     position: absolute; width: 76px; height: 76px; margin-left: -38px; margin-top: -38px;
     border: 2px solid #fff; border-radius: 8px; pointer-events: none;
@@ -133,14 +135,14 @@
   @media screen and (orientation: landscape) {
     .camera-overlay, .photo-viewer {
       position: fixed;
-      top: 0;
-      left: 100%;
+      top: 100%;
+      left: 0;
       width: 100vh;
       height: 100vw;
       width: 100dvh;
       height: 100dvw;
       transform-origin: 0 0;
-      transform: rotate(90deg);
+      transform: rotate(-90deg);
     }
     .camera-overlay .camera-bar {
       padding-left: max(12px, env(safe-area-inset-left));
