@@ -1162,7 +1162,12 @@ function openCamera(siteIdx) {
   // 업로드 속도 문제는 해상도가 아니라 통신 왕복 횟수가 원인이었어서(이미 수정함),
   // 화질을 낮추지 않아도 속도에는 큰 영향이 없다.
   navigator.mediaDevices.getUserMedia({
-    video: { facingMode: 'environment', width: { ideal: 3840 }, height: { ideal: 2160 } },
+    video: {
+      facingMode: 'environment',
+      width: { ideal: 4032 },
+      height: { ideal: 3024 },
+      aspectRatio: { ideal: 4 / 3 },
+    },
     audio: false,
   })
     .then(function (stream) {
