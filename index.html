@@ -1100,7 +1100,7 @@ function openCamera(siteIdx) {
       cameraVideo.srcObject = stream;
       shotCountThisSession = 0;
       clearReviewTray(); // 새 촬영 세션이므로 이전에 남아있던 임시 목록은 비운다
-      cameraShotCount.textContent = '0장 담김';
+      cameraShotCount.textContent = '0장 촬영됨';
       cameraQueueStatus.textContent = '';
       cameraOverlay.classList.remove('hidden');
       lockPortraitForCamera_(); // 가로 회전 시에도 버튼 위치가 안 움직이게 고정 시도
@@ -1217,11 +1217,10 @@ if (videoWrap && cameraVideo) {
   });
 }
 
-// "✕ 닫기"를 누르면, 그때까지 미리보기에 남아있던(=삭제하지 않은) 사진들을
-// 한꺼번에 업로드하고 카메라를 닫는다. 미리보기에서 X로 지운 사진은 애초에
-// 업로드되지 않는다.
+// (2026-07) 사진은 이제 찍는 즉시 업로드 대기열에 올라가므로, "✕ 닫기"는 더 이상
+// 업로드를 트리거하지 않는다 — 카메라를 끄고 미리보기 줄만 정리할 뿐이다.
 function closeCamera() {
-  finalizeReviewTray();
+  clearReviewTray();
   if (currentStream) {
     currentStream.getTracks().forEach(function (t) { t.stop(); });
     currentStream = null;
@@ -1259,9 +1258,10 @@ cameraCloseBtn.addEventListener('click', closeCamera);
 //
 // 셔터를 짧게 탭하면 한 장만 찍힌다. 셔터를 누른 채로 있으면(휴대폰 기본
 // 카메라의 "누르고 있으면 연사" 동작과 동일하게) 일정 간격으로 계속 찍혀서
-// 화면 아래 미리보기 줄에 쌓인다. 미리보기의 각 사진 오른쪽 위 ✕를 누르면
-// 그 사진은 삭제되어 업로드되지 않는다. "✕ 닫기"를 누르는 순간, 그때 미리보기에
-// 남아있는(=지우지 않은) 사진들만 구글 드라이브로 업로드되고 휴대폰에도 저장된다.
+// 화면 아래 미리보기 줄에 쌓인다. 각 사진은 찍히는 즉시 업로드 대기열에 올라가고
+// 휴대폰에도 저장된다(더 이상 "✕ 닫기"를 눌러야 올라가는 방식이 아니다). 미리보기의
+// 각 사진 오른쪽 위 ✕는 이제 화면에서 썸네일만 지울 뿐, 이미 시작된 업로드를
+// 취소하지는 않는다.
 // ------------------------------------------------------------------
 const reviewTrayEl = document.getElementById('reviewTray');
 let reviewTray = []; // [{id, blob, thumbUrl, siteIdx}]
@@ -1358,6 +1358,38 @@ function addBlobToReviewTray_(blob, siteIdx) {
 // 겹쳐 들어갈 수 있다.
 let burstCaptureBusy = false;
 
+// 휴대폰을 세로로 든 채 촬영해도(카메라 화면을 세로로 고정해뒀으므로 항상 이렇게
+// 찍힌다), 기기의 ImageCapture.takePhoto()는 getUserMedia에 넘긴 width/height
+// 힌트를 따르지 않고 자체 기본 정지사진 해상도를 세로(예: 3060×4080)로 내보내는
+// 경우가 많다(2026-07 확인 — width/height ideal을 아무리 바꿔도 실제 촬영 결과가
+// 전혀 안 바뀌었던 이유). 보고서에는 가로(예: 4080×3060) 사진이 맞으므로, 촬영
+// 직후 세로로 나온 사진은 여기서 시계방향 90도로 돌려 가로로 바꿔준다.
+function ensureLandscapeOrientation_(blob) {
+  if (!window.createImageBitmap) return Promise.resolve(blob);
+  return createImageBitmap(blob, { imageOrientation: 'from-image' })
+    .then(function (bmp) {
+      if (bmp.width >= bmp.height) {
+        if (bmp.close) bmp.close();
+        return blob; // 이미 가로면 그대로 둔다
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = bmp.height;
+      canvas.height = bmp.width;
+      const ctx = canvas.getContext('2d');
+      ctx.translate(canvas.width, 0);
+      ctx.rotate(Math.PI / 2);
+      ctx.drawImage(bmp, 0, 0);
+      if (bmp.close) bmp.close();
+      return new Promise(function (resolve, reject) {
+        canvas.toBlob(function (out) {
+          if (!out) reject(new Error('rotate toBlob failed'));
+          else resolve(out);
+        }, 'image/jpeg', 0.95);
+      });
+    })
+    .catch(function () { return blob; }); // 회전 실패 시 원본이라도 그대로 업로드
+}
+
 function captureFrameToTray() {
   if (!currentStream || !activeSiteIdx) return;
   if (burstCaptureBusy) return; // 이전 촬영이 아직 진행 중이면 이번 타이머 틱은 건너뛴다
@@ -1372,7 +1404,17 @@ function captureFrameToTray() {
 
   playShutterSound();
   capturePromise
-    .then(function (blob) { addBlobToReviewTray_(blob, siteIdx); })
+    .then(function (blob) { return ensureLandscapeOrientation_(blob); })
+    .then(function (blob) {
+      addBlobToReviewTray_(blob, siteIdx);
+      // R2 업로드 속도가 빨라져서(2026-07), 예전처럼 "✕ 닫기"를 누를 때까지
+      // 모아뒀다가 한꺼번에 올리지 않고, 한 장 찍을 때마다 바로바로 업로드
+      // 대기열에 올린다 — 휴대폰 저장도 마찬가지로 즉시 한다. 미리보기 줄의
+      // 썸네일은 이제 "업로드 전 확인용"이 아니라 "방금 찍은 사진 확인용"이며,
+      // ✕로 지워도 이미 올라간 업로드 자체를 취소하지는 않는다.
+      saveBlobToDevice(blob, makeLocalFileName(siteIdx));
+      enqueueUpload(siteIdx, blob, 'image/jpeg');
+    })
     .catch(function () { /* 이번 한 장만 실패 — 연사/전체 촬영은 계속 진행 */ })
     .then(function () { burstCaptureBusy = false; });
 }
@@ -1398,7 +1440,7 @@ function renderReviewTray() {
   reviewTrayEl.querySelectorAll('.thumb img').forEach(function (img, idx) {
     img.addEventListener('click', function () { openViewer(idx); });
   });
-  cameraShotCount.textContent = reviewTray.length + '장 담김';
+  cameraShotCount.textContent = reviewTray.length + '장 촬영됨';
 }
 
 // ------------------------------------------------------------------
@@ -1516,20 +1558,6 @@ function clearReviewTray() {
   reviewTray.forEach(function (item) { URL.revokeObjectURL(item.thumbUrl); });
   reviewTray = [];
   renderReviewTray();
-}
-
-// 미리보기에 남아있는(=지우지 않은) 사진들을 실제로 업로드 대기열에 넣고,
-// 휴대폰에도 저장한 뒤 미리보기를 비운다.
-function finalizeReviewTray() {
-  closeViewer();
-  reviewTray.forEach(function (item) {
-    saveBlobToDevice(item.blob, makeLocalFileName(item.siteIdx));
-    enqueueUpload(item.siteIdx, item.blob, 'image/jpeg');
-  });
-  reviewTray.forEach(function (item) { URL.revokeObjectURL(item.thumbUrl); });
-  reviewTray = [];
-  reviewTrayEl.classList.add('hidden');
-  reviewTrayEl.innerHTML = '';
 }
 
 function stopShutterHold() {
