@@ -135,7 +135,6 @@
   }
   .shutter-btn:active, .shutter-btn.holding { background: #ff5252; }
   .close-btn { background: transparent; color: #fff; border: 1px solid #666; width: auto; padding: 8px 12px; margin: 0; font-size: 13px; white-space: nowrap; }
-  .close-btn.voice-off { color: #888; border-color: #444; }
   .camera-overlay .queue-status {
     color: #9be29b; font-size: 12px; text-align: center; padding: 6px 0; background: #111; min-height: 16px;
   }
@@ -253,7 +252,6 @@
   <div class="camera-bar">
     <button type="button" class="close-btn" id="cameraCloseBtn">✕ 닫기</button>
     <span class="count" id="cameraShotCount">0장 촬영됨</span>
-    <button type="button" class="close-btn" id="voiceToggleBtn">🎤 음성 켜짐</button>
   </div>
   <div class="video-wrap" id="videoWrap">
     <video id="cameraVideo" autoplay playsinline muted></video>
@@ -993,6 +991,7 @@ const torchToggleBtn = document.getElementById('torchToggleBtn');
 
 let currentStream = null;
 let currentTrack = null;   // 현재 카메라 스트림의 video track (초점/노출/손전등 제어용)
+let cameraHistoryPushed_ = false; // 카메라를 열 때 뒤로가기 대응용 히스토리를 쌓아뒀는지
 let imageCapture = null;   // 지원 기기에서 하드웨어 정지사진 캡처에 사용
 let shotCountThisSession = 0;
 
@@ -1031,76 +1030,6 @@ function updateWakeLock() {
 document.addEventListener('visibilitychange', function () {
   if (document.visibilityState === 'visible') updateWakeLock();
 });
-
-// ------------------------------------------------------------------
-// 음성으로 촬영 — "찰칵"이라고 말하면 셔터를 누른 것처럼 사진이 찍힌다.
-// 브라우저 내장 음성 인식(Web Speech API)을 쓴다. 크롬 계열(안드로이드 크롬 포함)에서만
-// 지원되며, 지원하지 않는 브라우저에서는 버튼이 "미지원"으로 비활성화되고 셔터 버튼으로만
-// 촬영하면 된다 — 이 기능이 없어도 기존 촬영 방식에는 전혀 영향이 없다.
-// ------------------------------------------------------------------
-const SpeechRecognitionCtor_ = window.SpeechRecognition || window.webkitSpeechRecognition;
-const voiceToggleBtn = document.getElementById('voiceToggleBtn');
-let voiceRecognition_ = null;
-let voiceEnabled = true;   // 사용자가 켜둔 상태인지(꺼두면 카메라를 열어도 다시 켜지 않는다)
-let voiceShouldRun_ = false; // 지금 이 순간 인식이 돌고 있어야 하는지(카메라가 열려있는 동안만)
-
-function updateVoiceToggleLabel_() {
-  if (!voiceToggleBtn) return;
-  if (!SpeechRecognitionCtor_) {
-    voiceToggleBtn.textContent = '🎤 미지원';
-    voiceToggleBtn.disabled = true;
-    voiceToggleBtn.classList.add('voice-off');
-    return;
-  }
-  voiceToggleBtn.textContent = voiceEnabled ? '🎤 "찰칵" 켜짐' : '🎤 음성 꺼짐';
-  voiceToggleBtn.classList.toggle('voice-off', !voiceEnabled);
-}
-
-function startVoiceRecognition_() {
-  if (!SpeechRecognitionCtor_ || !voiceEnabled) return;
-  voiceShouldRun_ = true;
-  if (voiceRecognition_) { try { voiceRecognition_.stop(); } catch (e) {} }
-  voiceRecognition_ = new SpeechRecognitionCtor_();
-  voiceRecognition_.lang = 'ko-KR';
-  voiceRecognition_.continuous = true;
-  voiceRecognition_.interimResults = false;
-  voiceRecognition_.onresult = function (event) {
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-      const transcript = (event.results[i][0] && event.results[i][0].transcript) || '';
-      // "찰칵"의 흔한 인식 오류(짤칵/철칵 등)도 함께 받아준다.
-      if (/찰\s*칵|짤\s*칵|철\s*칵/.test(transcript)) {
-        captureFrameToTray();
-      }
-    }
-  };
-  voiceRecognition_.onerror = function () { /* 인식 실패는 무시 — onend에서 재시작 시도 */ };
-  voiceRecognition_.onend = function () {
-    // 음성 인식은 일정 시간(무음 등)이 지나면 자동으로 멈추는 경우가 많으므로,
-    // 카메라가 아직 열려 있고 사용자가 꺼두지 않았다면 계속 다시 시작한다.
-    if (voiceShouldRun_ && voiceEnabled && cameraOverlay && !cameraOverlay.classList.contains('hidden')) {
-      try { voiceRecognition_.start(); } catch (e) {}
-    }
-  };
-  try { voiceRecognition_.start(); } catch (e) {}
-}
-
-function stopVoiceRecognition_() {
-  voiceShouldRun_ = false;
-  if (voiceRecognition_) {
-    try { voiceRecognition_.stop(); } catch (e) {}
-    voiceRecognition_ = null;
-  }
-}
-
-if (voiceToggleBtn) {
-  voiceToggleBtn.addEventListener('click', function () {
-    if (!SpeechRecognitionCtor_) return;
-    voiceEnabled = !voiceEnabled;
-    updateVoiceToggleLabel_();
-    if (voiceEnabled) startVoiceRecognition_(); else stopVoiceRecognition_();
-  });
-}
-updateVoiceToggleLabel_();
 
 // 안드로이드 브라우저 대부분은 "전체화면 상태가 아니면" screen.orientation.lock()이
 // 거부된다(SecurityError/NotSupportedError). 그래서 카메라를 열 때 촬영 화면을
@@ -1148,8 +1077,7 @@ function unlockPortraitForCamera_() {
 
 function openCamera(siteIdx) {
   activeSiteIdx = siteIdx;
-  // 버튼 클릭(사용자 제스처) 시점에 미리 오디오를 켜둬야, 나중에 음성 명령으로
-  // 찍었을 때도(버튼을 직접 누른 게 아니어도) 셔터 소리가 막히지 않는다.
+  // 버튼 클릭(사용자 제스처) 시점에 미리 오디오를 켜둬야 셔터 소리가 막히지 않는다.
   initAudioCtx();
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     cameraInput.click();
@@ -1161,13 +1089,10 @@ function openCamera(siteIdx) {
   // 해상도를 지원하면 그대로 쓰고, 지원하지 않으면 기기가 알아서 가능한 만큼만 쓴다.
   // 업로드 속도 문제는 해상도가 아니라 통신 왕복 횟수가 원인이었어서(이미 수정함),
   // 화질을 낮추지 않아도 속도에는 큰 영향이 없다.
+  // (2026-07: 4:3 비율(4032x3024)로 바꿔봤다가 사진이 3024x4032(세로)로 찍히고
+  // 업로드도 느려진다는 피드백을 받아 원래 설정(3840x2160)으로 되돌렸다.)
   navigator.mediaDevices.getUserMedia({
-    video: {
-      facingMode: 'environment',
-      width: { ideal: 4032 },
-      height: { ideal: 3024 },
-      aspectRatio: { ideal: 4 / 3 },
-    },
+    video: { facingMode: 'environment', width: { ideal: 3840 }, height: { ideal: 2160 } },
     audio: false,
   })
     .then(function (stream) {
@@ -1180,7 +1105,15 @@ function openCamera(siteIdx) {
       cameraOverlay.classList.remove('hidden');
       lockPortraitForCamera_(); // 가로 회전 시에도 버튼 위치가 안 움직이게 고정 시도
       updateWakeLock();
-      startVoiceRecognition_(); // 음성 촬영이 켜져 있으면 카메라와 함께 듣기 시작
+      // 안드로이드 뒤로가기(제스처/버튼)를 누르면 브라우저가 바로 이전 페이지로
+      // 이동하면서 앱이 통째로 종료돼버리는 문제가 있었다. 카메라를 열 때 히스토리에
+      // 상태를 하나 쌓아두면, 뒤로가기를 눌러도 우선 이 상태 하나만 소비되고(popstate
+      // 이벤트만 발생, 실제 페이지 이동은 없음) 앱은 그대로 유지된다 — 그 popstate를
+      // 받아서 카메라만 닫아준다(아래 popstate 리스너 참고).
+      if (!cameraHistoryPushed_) {
+        cameraHistoryPushed_ = true;
+        try { history.pushState({ camera: true }, ''); } catch (e) {}
+      }
 
       // 휴대폰 기본 카메라 앱 수준의 화질을 내기 위해, 미리보기 비디오 프레임을
       // canvas로 캡처하는 대신(압축/다운샘플된 미리보기용 스트림이라 화질이 떨어짐)
@@ -1289,7 +1222,6 @@ if (videoWrap && cameraVideo) {
 // 업로드되지 않는다.
 function closeCamera() {
   finalizeReviewTray();
-  stopVoiceRecognition_();
   if (currentStream) {
     currentStream.getTracks().forEach(function (t) { t.stop(); });
     currentStream = null;
@@ -1301,7 +1233,24 @@ function closeCamera() {
   unlockPortraitForCamera_();
   if (activeSiteIdx) refreshPhotoList(activeSiteIdx);
   updateWakeLock();
+  // "닫기" 버튼 등으로(뒤로가기가 아니라) 카메라를 닫은 경우, 열 때 쌓아뒀던 히스토리
+  // 상태를 되돌려준다 — 그래야 다음에 실제로 뒤로가기를 눌렀을 때 이 화면에서 쓰지도
+  // 않은 상태 때문에 한 번 더 눌러야 하는 일이 없다. history.back()이 popstate를
+  // 다시 발생시키지만, 그때는 카메라가 이미 닫혀있어서(overlay hidden) 아래 리스너의
+  // 조건에 걸리지 않아 closeCamera()가 다시 불리지 않는다.
+  if (cameraHistoryPushed_) {
+    cameraHistoryPushed_ = false;
+    try { history.back(); } catch (e) {}
+  }
 }
+
+window.addEventListener('popstate', function () {
+  if (cameraHistoryPushed_ && cameraOverlay && !cameraOverlay.classList.contains('hidden')) {
+    cameraHistoryPushed_ = false; // 이미 뒤로가기로 상태가 소비됐으므로, closeCamera()가
+                                    // 또 history.back()을 부르지 않도록 먼저 꺼둔다.
+    closeCamera();
+  }
+});
 
 cameraCloseBtn.addEventListener('click', closeCamera);
 
