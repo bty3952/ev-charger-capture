@@ -326,6 +326,31 @@ function mergeRosterRows_(existing, incoming) {
   return merged;
 }
 
+// 신청관리 엑셀의 나머지 컬럼(충전요금/설치방식/주차면수 등, 보고서 작성에 필요)까지 담은
+// 마스터 데이터 -- roster.json과 달리 대기번호||신청자명을 키로 하는 객체이며, 새로 업로드할
+// 때마다 겹치는 대기번호는 최신 값으로 갱신되고 새 대기번호는 추가되는 식으로 계속 누적된다.
+// (예전에는 원본 엑셀 파일 자체를 매번 새 파일로 저장했으나, 파일이 계속 쌓이기만 하고
+// 검색하기 번거로워 2026-07에 이 방식으로 바꿨다.)
+function getRosterDataFromR2_() {
+  return fetch(WORKER_URL + '/upload/roster-data.json', { cache: 'no-store' })
+    .then(function (resp) {
+      if (resp.status === 404) return {};
+      if (!resp.ok) throw new Error('원본 데이터 조회 실패 (status ' + resp.status + ')');
+      return resp.json();
+    });
+}
+
+function saveRosterDataToR2_(data) {
+  return fetch(WORKER_URL + '/upload/roster-data.json', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  }).then(function (resp) {
+    if (!resp.ok) throw new Error('원본 데이터 저장 실패 (status ' + resp.status + ')');
+    return data;
+  });
+}
+
 if (!API_URL || API_URL.indexOf('PUT_YOUR_') === 0) {
   document.getElementById('configWarning').classList.remove('hidden');
 }
@@ -531,9 +556,11 @@ xlsxInput.addEventListener('change', function (e) {
       if (headerRowIdx === -1 || nameCol === -1) {
         throw new Error('"대기 번호" 또는 "신청자명" 열을 찾지 못했습니다. 파일 형식을 확인해주세요.');
       }
+      const headerRow = grid[headerRowIdx] || [];
 
       const seen = new Set();
       rows = [];
+      const fullRowsByKey = {}; // 대기번호||신청자명 -> 전체 컬럼(충전요금/설치방식 등)
       for (let r = headerRowIdx + 1; r < grid.length; r++) {
         const row = grid[r] || [];
         const waitRaw = row[waitCol];
@@ -548,6 +575,13 @@ xlsxInput.addEventListener('change', function (e) {
         if (seen.has(key)) continue;
         seen.add(key);
         rows.push({ waitingNo, applicantName });
+
+        const fullRow = {};
+        headerRow.forEach(function (h, idx) {
+          if (h === null || h === undefined || h === '') return;
+          fullRow[String(h).trim()] = row[idx] === undefined ? null : row[idx];
+        });
+        fullRowsByKey[key] = fullRow;
       }
 
       if (rows.length === 0) {
@@ -563,21 +597,18 @@ xlsxInput.addEventListener('change', function (e) {
         .then(onFoldersCreated)
         .catch(onServerError);
 
-      // 대기번호/신청자명만 뽑은 것과 별개로, 충전요금·설치방식 등 다른 열까지 담긴
-      // 원본 엑셀 파일 자체도 R2에 고정 키로 그대로 저장해둔다(나중에 보고서 만들 때
-      // 다시 첨부하지 않아도 되도록). 핵심 흐름(명단 저장)을 막지 않도록 별도로 진행한다.
+      // 대기번호/신청자명만 뽑은 것과 별개로, 충전요금·설치방식 등 다른 열까지 담긴 전체 행
+      // 데이터도 roster-data.json에 병합 저장해둔다(나중에 보고서 만들 때 다시 첨부하지
+      // 않아도 되도록). 겹치는 대기번호는 이번 값으로 갱신되고, 새 대기번호는 추가된다 --
+      // 원본 엑셀 파일을 매번 새로 저장하지 않으므로 파일이 쌓이지 않는다. 핵심 흐름(명단
+      // 저장)을 막지 않도록 별도로 진행한다.
       try {
-        // 고정 키로 저장하면 다음 업로드 때 예전 파일을 덮어써서, 아직 보고서를 작성하지
-        // 않은 대기번호의 충전요금/설치방식 등 상세 컬럼이 사라져버린다(2026-07 사용자 지적).
-        // 그래서 업로드 시각을 키에 포함시켜 매번 새 파일로 쌓이게 한다 -- 명단(roster.json)은
-        // 누적 병합되지만, 원본 엑셀의 나머지 컬럼은 이 xlsx 스냅샷들에서만 찾을 수 있다.
-        const xlsxTs = new Date().toISOString().replace(/[:.]/g, '-');
-        const xlsxKey = 'xlsx/' + xlsxTs + '_' + file.name;
-        fetch(WORKER_URL + '/upload/' + xlsxKey.split('/').map(encodeURIComponent).join('/'), {
-          method: 'PUT',
-          headers: { 'Content-Type': file.type || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
-          body: file,
-        }).catch(function () { /* 실패해도 명단 저장 자체에는 영향 없음 */ });
+        getRosterDataFromR2_()
+          .then(function (existingData) {
+            const merged = Object.assign({}, existingData, fullRowsByKey);
+            return saveRosterDataToR2_(merged);
+          })
+          .catch(function () { /* 실패해도 명단 저장 자체에는 영향 없음 */ });
       } catch (e) { /* 실패해도 명단 저장 자체에는 영향 없음 */ }
     } catch (err) {
       uploadStatus.textContent = '오류: ' + err.message;
