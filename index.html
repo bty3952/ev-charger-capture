@@ -287,15 +287,20 @@
     <span class="spacer"></span>
   </div>
   <div class="queue-status" id="cameraQueueStatus"></div>
-</div>
-
-<div class="photo-viewer hidden" id="photoViewer">
-  <div class="viewer-stage" id="viewerStage">
-    <img id="viewerImg" draggable="false">
-  </div>
-  <div class="viewer-bar">
-    <button type="button" class="close-btn" id="viewerRetryBtn">↺ 다시 촬영</button>
-    <button type="button" class="close-btn confirm-btn" id="viewerConfirmBtn">✓ 확인</button>
+  <!-- (2026-07) 예전엔 이 확인/다시촬영 화면이 #cameraOverlay 밖의 형제(sibling)
+       엘리먼트였다. 카메라를 브라우저 전체화면으로 켰을 때, 전체화면 대상이 아닌
+       형제 엘리먼트는 브라우저가 그리지 않는(top-layer 렌더링 제약) 문제가 있어서
+       사진을 찍어도 이 화면이 안 보이다가 뒤로가기로 전체화면이 풀려야만 보였다.
+       그래서 #cameraOverlay의 자식으로 옮겼다 — position:fixed라 위치/크기는
+       그대로다. -->
+  <div class="photo-viewer hidden" id="photoViewer">
+    <div class="viewer-stage" id="viewerStage">
+      <img id="viewerImg" draggable="false">
+    </div>
+    <div class="viewer-bar">
+      <button type="button" class="close-btn" id="viewerRetryBtn">↺ 다시 촬영</button>
+      <button type="button" class="close-btn confirm-btn" id="viewerConfirmBtn">✓ 확인</button>
+    </div>
   </div>
 </div>
 
@@ -1053,25 +1058,53 @@ document.addEventListener('visibilitychange', function () {
   if (document.visibilityState === 'visible') updateWakeLock();
 });
 
-// (2026-07) 이 앱은 예전에 카메라를 열 때 브라우저 전체화면(Fullscreen API)으로
-// 만든 뒤 screen.orientation.lock('portrait')으로 세로 고정을 시도했었다.
-// 그런데 이 방식은 세 가지 실제 버그의 원인이었던 것으로 확인됐다:
-//  1) 전체화면 진입 시 브라우저가 "전체화면을 종료하려면..." 안내 배너를
-//     자동으로 띄우고, 이게 하단 촬영 버튼 위에 겹쳐 보였다.
-//  2) 촬영 확인/다시촬영 화면(#photoViewer)이 전체화면 대상 요소
-//     (#cameraOverlay)의 자식이 아니라 형제(sibling) 엘리먼트라서, 카메라가
-//     전체화면 상태인 동안에는 브라우저가 그 형제 엘리먼트를 그리지 않는다
-//     — 그래서 사진을 찍어도 확인/다시촬영 버튼이 안 보이다가, 뒤로가기를
-//     눌러 전체화면이 강제로 풀려야만(그 부수효과로) 비로소 보였다.
-//  3) 확인 후 다음 촬영으로 돌아왔을 때 전체화면/잠금이 이미 풀려있는 채로
-//     남아있어서, 두 번째 촬영부터는 실제로 화면이 가로로 돌아가며 버튼
-//     아이콘도 같이 돌아가 보였다.
-// 세 가지 모두 Fullscreen API를 아예 안 쓰면 근본적으로 사라진다. 세로 고정은
-// 아래 CSS의 `@media (orientation: landscape) { transform: rotate(90deg) }`
-// 트릭 하나만으로 처리한다 — 네이티브 API 없이 동작해서 배너도 없고,
-// top-layer 렌더링 제약도 없다.
-function lockPortraitForCamera_() {}
-function unlockPortraitForCamera_() {}
+// (2026-07) 카메라를 열 때 브라우저 전체화면(Fullscreen API)으로 만든 뒤
+// screen.orientation.lock('portrait')으로 세로 고정을 시도한다 — 이렇게 해야
+// 주소창/다운로드 알림 같은 브라우저 UI가 다 가려지고, 실제로 폰을 가로로
+// 돌려도 화면 자체가 물리적으로 안 돌아간다(가장 확실한 방법). 예전엔 이
+// 방식에서 확인/다시촬영 화면(#photoViewer)이 전체화면 대상 요소의 자식이
+// 아니라 형제(sibling)라서 전체화면 중엔 안 그려지는 버그가 있었는데, 이제
+// #photoViewer를 #cameraOverlay 안으로 옮겨서 그 문제는 해결했다. 전체화면/
+// 잠금 자체를 지원하지 않는 브라우저(예: 일부 iOS Safari)에서는 조용히
+// 실패하고, 그 경우 아래 CSS의 rotate(-90deg) 트릭이 안전장치로 대신
+// 작동한다(둘 다 걸려 있어도 네이티브 잠금이 성공하면 화면이 물리적으로
+// landscape가 되지 않으므로 media query 자체가 발동하지 않아 충돌하지 않는다).
+let didRequestFullscreenForCamera_ = false;
+
+function lockPortraitForCamera_() {
+  didRequestFullscreenForCamera_ = false;
+  try {
+    const el = cameraOverlay;
+    const reqFs = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen;
+    if (reqFs) {
+      Promise.resolve(reqFs.call(el)).then(function () {
+        didRequestFullscreenForCamera_ = true;
+        if (screen.orientation && screen.orientation.lock) {
+          screen.orientation.lock('portrait').catch(function () {});
+        }
+      }).catch(function () {
+        if (screen.orientation && screen.orientation.lock) {
+          screen.orientation.lock('portrait').catch(function () {});
+        }
+      });
+    } else if (screen.orientation && screen.orientation.lock) {
+      screen.orientation.lock('portrait').catch(function () {});
+    }
+  } catch (e) { /* 지원하지 않는 브라우저는 그냥 가로 회전이 허용됨 */ }
+}
+
+function unlockPortraitForCamera_() {
+  try {
+    if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock();
+  } catch (e) {}
+  try {
+    if (didRequestFullscreenForCamera_ && document.fullscreenElement) {
+      const exitFs = document.exitFullscreen || document.webkitExitFullscreen || document.mozCancelFullScreen;
+      if (exitFs) exitFs.call(document);
+    }
+  } catch (e) {}
+  didRequestFullscreenForCamera_ = false;
+}
 
 function openCamera(siteIdx) {
   activeSiteIdx = siteIdx;
