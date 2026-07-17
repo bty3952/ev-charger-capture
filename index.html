@@ -1047,49 +1047,17 @@ document.addEventListener('visibilitychange', function () {
   if (document.visibilityState === 'visible') updateWakeLock();
 });
 
-// 안드로이드 브라우저 대부분은 "전체화면 상태가 아니면" screen.orientation.lock()이
-// 거부된다(SecurityError/NotSupportedError). 그래서 카메라를 열 때 촬영 화면을
-// 먼저 전체화면으로 만든 다음 세로로 잠그는 순서로 시도한다 — 이렇게 해야 실제로
-// 휴대폰을 가로로 돌려도 화면과 버튼이 세로로 고정된 채 유지된다. 전체화면/잠금
-// 자체를 지원하지 않는 브라우저(예: 일부 iOS Safari)에서는 조용히 실패하고, 그 경우
-// 위 CSS의 안전장치(레이아웃이 깨지지 않게만 보정)로 대체된다.
-let didRequestFullscreenForCamera_ = false;
-
-function lockPortraitForCamera_() {
-  didRequestFullscreenForCamera_ = false;
-  try {
-    const el = cameraOverlay;
-    const reqFs = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen;
-    if (reqFs) {
-      Promise.resolve(reqFs.call(el)).then(function () {
-        didRequestFullscreenForCamera_ = true;
-        if (screen.orientation && screen.orientation.lock) {
-          screen.orientation.lock('portrait').catch(function () {});
-        }
-      }).catch(function () {
-        // 전체화면 자체가 막힌 경우, 그래도 밑져야 본전으로 잠금만 시도해본다.
-        if (screen.orientation && screen.orientation.lock) {
-          screen.orientation.lock('portrait').catch(function () {});
-        }
-      });
-    } else if (screen.orientation && screen.orientation.lock) {
-      screen.orientation.lock('portrait').catch(function () {});
-    }
-  } catch (e) { /* 지원하지 않는 브라우저는 그냥 가로 회전이 허용됨 */ }
-}
-
-function unlockPortraitForCamera_() {
-  try {
-    if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock();
-  } catch (e) {}
-  try {
-    if (didRequestFullscreenForCamera_ && document.fullscreenElement) {
-      const exitFs = document.exitFullscreen || document.webkitExitFullscreen || document.mozCancelFullScreen;
-      if (exitFs) exitFs.call(document);
-    }
-  } catch (e) {}
-  didRequestFullscreenForCamera_ = false;
-}
+// 예전엔 카메라를 열 때 화면을 브라우저 전체화면(Fullscreen API)으로 만든 뒤
+// screen.orientation.lock('portrait')으로 잠그는 방식을 함께 썼었다. 그런데
+// 이 방식은 (1) 전체화면 진입 시 브라우저가 "전체화면을 종료하려면..." 안내
+// 배너를 자동으로 띄우고, (2) 실제로 orientation.lock이 걸리면 브라우저 자체가
+// 이미 화면을 세로로 유지하는데 그 위에 아래 CSS의 rotate(90deg) 보정까지
+// 겹쳐 적용되면서 화면 크기가 실제 뷰포트보다 커지는 버그(두번째 촬영 시
+// 버튼이 화면 밖으로 밀려나는 등)를 일으켰다. 그래서 전체화면/orientation.lock
+// 네이티브 API는 쓰지 않고, 아래 CSS의 rotate(90deg) 트릭 하나만으로 세로
+// 고정을 구현한다 — 배너도 뜨지 않고 이중 보정도 없다.
+function lockPortraitForCamera_() {}
+function unlockPortraitForCamera_() {}
 
 function openCamera(siteIdx) {
   activeSiteIdx = siteIdx;
